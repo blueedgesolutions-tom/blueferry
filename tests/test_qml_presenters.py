@@ -3484,3 +3484,56 @@ Item {
     log = result.stdout + result.stderr
     assert result.returncode == 0 and "BLUEFERRY_AVATARS_OK" in log, log
     assert "WARN scene:" not in log and "ReferenceError" not in log and "TypeError" not in log, log
+
+
+def test_quickshell_now_playing_renders_the_bridge_view(qml_engine) -> None:
+    theme = _component(qml_engine, "data/quickshell/ThemePalette.qml").create()
+    component = _component(qml_engine, "data/quickshell/QuickshellNowPlaying.qml")
+    strip = component.createWithInitialProperties({"ferryTheme": theme})
+    assert strip is not None, component.errors()
+    try:
+        assert strip.property("visible") is False
+        strip.setProperty("view", {
+            "visible": True, "playing": True, "title": "<b>Song</b>", "artist": "Band",
+            "idle": False, "previous": False, "toggle": True, "next": True,
+        })
+        summary = strip.findChild(QObject, "nowPlayingSummary")
+        assert summary.property("text") == "▶  <b>Song</b> — Band"
+        assert strip.findChild(QObject, "nowPlayingPrevious").property("enabled") is False
+        toggle = strip.findChild(QObject, "nowPlayingToggle")
+        assert toggle.property("enabled") is True
+        assert toggle.property("text") == "⏸"
+
+        commands = []
+        strip.commandRequested.connect(commands.append)
+        assert QMetaObject.invokeMethod(toggle, "clicked")
+        assert commands == ["toggle"]
+
+        strip.setProperty("view", {"visible": True, "idle": True})
+        assert summary.property("text") == "⏸  Nothing is playing on the iPhone"
+        strip.setProperty("view", {"visible": True, "title": "", "artist": ""})
+        assert summary.property("text") == "⏸  Unknown title"
+    finally:
+        strip.deleteLater()
+        QGuiApplication.processEvents()
+
+
+def test_quickshell_fetches_now_playing_only_with_the_opt_in(qml_engine) -> None:
+    source = (ROOT / "data/quickshell/shell.qml").read_text()
+    functions = _qml_functions(source, ("refreshNowPlaying",))
+    script = '''(function() {
+        var calls = [];
+        var backendBridge = {
+            requestLatest: function(method) { calls.push("request:" + method); },
+            cancelLatest: function(method) { calls.push("cancel:" + method); }
+        };
+        var root = {backendStatus: {media_control_enabled: "true"}, nowPlaying: {visible: true}};
+    ''' + functions + '''
+        refreshNowPlaying();
+        if (root.nowPlaying.visible) throw new Error("stale strip kept");
+        root.backendStatus = {media_control_enabled: true};
+        refreshNowPlaying();
+        return JSON.stringify(calls);
+    })()'''
+    assert _evaluate(qml_engine, script) == '["cancel:now_playing","request:now_playing"]'
+    assert 'name === "now-playing-changed") root.refreshNowPlaying()' in source
