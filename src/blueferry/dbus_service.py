@@ -329,6 +329,26 @@ class MessagesService(dbus.service.Object):
         ))
 
     @dbus.service.method(
+        IFACE, in_signature="b", out_signature="s", sender_keyword="sender"
+    )
+    def SetContactPhotos(self, enabled: bool, sender=None) -> str:
+        """Save the contact-photo opt-in and apply it now; returns contact_photos."""
+        return self._sync(lambda: self._authorized(
+            sender, "settings",
+            lambda: self._json_response(self.operations.set_contact_photos(bool(enabled))),
+        ))
+
+    @dbus.service.method(
+        IFACE, in_signature="b", out_signature="s", sender_keyword="sender"
+    )
+    def SetOtpAutocopy(self, enabled: bool, sender=None) -> str:
+        """Save the one-time code opt-in and apply it now; returns otp_autocopy."""
+        return self._sync(lambda: self._authorized(
+            sender, "settings",
+            lambda: self._json_response(self.operations.set_otp_autocopy(bool(enabled))),
+        ))
+
+    @dbus.service.method(
         IFACE, in_signature="b", out_signature="b", sender_keyword="sender"
     )
     def SetContactsOnlyNotifications(

@@ -434,10 +434,7 @@ class LibnotifySink:
                     subscription.remove()
                 except Exception:
                     log.debug("could not remove stale message watch", exc_info=True)
-            try:
-                self._notif.CloseNotification(dbus.UInt32(oldest))
-            except dbus.exceptions.DBusException:
-                log.debug("could not close stale desktop notification", exc_info=True)
+            self._close_async(oldest)
 
     def amend_message_popup(self, handle: str, line: str) -> bool:
         """Append ``line`` to the open popup for message ``handle``.
@@ -943,10 +940,7 @@ class LibnotifySink:
             if nid is None:
                 return
             notifications.pop(nid, None)
-            try:
-                self._notif.CloseNotification(dbus.UInt32(nid))
-            except dbus.exceptions.DBusException as error:
-                log.debug("could not close call popup: %s", error.get_dbus_name())
+            self._close_async(nid)
             return
         if record.call_id in popups or self._policy() == NO_NOTIFICATIONS:
             return
@@ -1024,11 +1018,8 @@ class LibnotifySink:
             return
         if nid not in self._pending:
             return  # already closed/handled
-        try:
-            self._notif.CloseNotification(dbus.UInt32(nid))
-            log.info("iPhone marked message read — closed popup %d", nid)
-        except dbus.exceptions.DBusException as e:
-            log.debug("CloseNotification(%d): %s", nid, e.get_dbus_name())
+        log.info("iPhone marked message read — closing popup %d", nid)
+        self._close_async(nid)
         # _on_closed will clean up the dict + signal match (reason=3)
 
     # ---- Linux user dismisses → mark-read on iPhone ----------------------
