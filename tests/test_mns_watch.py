@@ -27,12 +27,14 @@ class _Harness:
             self.handlers[signal_name] = handler
             return SimpleNamespace(remove=lambda: self.removed_matches.append(signal_name))
 
-        bus = SimpleNamespace(add_signal_receiver=subscribe, get_object=lambda *_a: object())
+        bus = SimpleNamespace(add_signal_receiver=subscribe, get_object=lambda *_a, **_k: object())
         monkeypatch.setattr(mns_watch, "get_session_bus", lambda: bus)
         monkeypatch.setattr(
             mns_watch.dbus,
             "Interface",
-            lambda *_a: SimpleNamespace(GetManagedObjects=lambda **_k: existing or {}),
+            lambda *_a: SimpleNamespace(
+                GetManagedObjects=lambda **k: k["reply_handler"](existing or {}),
+            ),
         )
 
         def schedule(delay, callback):
@@ -137,3 +139,37 @@ def test_stopping_cancels_reports_and_signal_watches(monkeypatch):
     assert harness.timers == {}
     assert harness.present == []
     assert sorted(harness.removed_matches) == ["InterfacesAdded", "InterfacesRemoved"]
+
+
+def test_an_inventory_reply_after_stop_is_dropped(monkeypatch):
+    harness = _Harness(monkeypatch)
+    replies: list = []
+    monkeypatch.setattr(
+        mns_watch.dbus,
+        "Interface",
+        lambda *_a: SimpleNamespace(GetManagedObjects=lambda **k: replies.append(k)),
+    )
+    harness.watch.start()
+    assert harness.timers == {}  # nothing armed until obexd answers
+    harness.watch.stop()
+
+    replies[0]["reply_handler"]({MNS_PATH: _mns()})
+
+    assert not harness.watch.connected
+    assert harness.present == []
+    assert harness.timers == {}
+
+
+def test_a_failed_inventory_still_arms_the_open_grace(monkeypatch):
+    harness = _Harness(monkeypatch)
+    replies: list = []
+    monkeypatch.setattr(
+        mns_watch.dbus,
+        "Interface",
+        lambda *_a: SimpleNamespace(GetManagedObjects=lambda **k: replies.append(k)),
+    )
+    harness.watch.start()
+
+    replies[0]["error_handler"](RuntimeError("obexd gone"))
+
+    assert harness.delays() == [mns_watch.OPEN_GRACE_SECONDS]
