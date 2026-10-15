@@ -167,12 +167,16 @@ class Daemon:
         self.contacts = ContactsResolver(storage=self.storage)
         # Opt-in avatars. Disabled means inert: nothing is parsed, served,
         # or written, and photos kept by an earlier opt-in are erased.
+        # Keep cleanup ownership even while photo display is disabled. Only
+        # the daemon that claims the bus name may sweep another run's files.
+        self._avatar_files = PhotoFiles(
+            photo_ref=self.contacts.photo_ref,
+            load_photo=self.contacts.load_photo,
+            sweep_orphans=False,
+        )
         self.photo_files: PhotoFiles | None = None
         if config.CONTACT_PHOTOS:
-            self.photo_files = PhotoFiles(
-                photo_ref=self.contacts.photo_ref,
-                load_photo=self.contacts.load_photo,
-            )
+            self.photo_files = self._avatar_files
         else:
             self._erase_contact_photos()
         self.connectivity = Connectivity()
@@ -698,6 +702,7 @@ class Daemon:
         # the control surface before any Bluetooth operation that can wait on
         # hardware or the phone.
         self._bus_name = claim_bus_name()
+        self._avatar_files.sweep_orphans()
         # Construction may overlap the previous daemon finishing recovery.
         # Only its successor may refresh or act on the persisted obligation.
         self.recovery.adapter.reload_journal()
@@ -925,6 +930,7 @@ class Daemon:
                 self._dbus_service.retry_storage_unlock()
         except Exception:
             log.warning("could not schedule background storage retry", exc_info=True)
+        self._avatar_files.retry_cleanup()
         return True
 
     def _initialize_storage(self) -> None:
@@ -941,6 +947,7 @@ class Daemon:
     def _clear_photo_files(self) -> None:
         if self.photo_files is not None:
             self.photo_files.clear()
+        self._avatar_files.retry_cleanup()
 
     def _retire_photo_files(self) -> None:
         # A refreshed cache must not reuse old files, but popups already
