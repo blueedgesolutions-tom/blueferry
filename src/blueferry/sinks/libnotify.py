@@ -570,7 +570,11 @@ class LibnotifySink:
                 int(event.notification_id),
                 int(getattr(event, "action_token", 0)),
             )
-        self._track_ancs_popup(int(nid), int(getattr(event, "notification_id", 0) or 0))
+        uid = getattr(event, "notification_id", None)
+        if uid is not None:
+            # Without its iPhone UID a popup can't be matched to a removal;
+            # tracking it under a made-up 0 could close an unrelated one.
+            self._track_ancs_popup(int(nid), int(uid))
         if clickable:
             if not hasattr(self, "_open_apps"):
                 self._open_apps = {}
@@ -779,13 +783,21 @@ class LibnotifySink:
 
     def close_ancs_notification(self, uid: int) -> None:
         """Close a popup whose iPhone notification was removed on the phone."""
+        closing: set[int] = set()
         for table in (
             getattr(self, "_ancs_actions", {}),
             getattr(self, "_ancs_retries", {}),
         ):
             for nid in [nid for nid, value in table.items() if value[0] == uid]:
                 table.pop(nid, None)
-                self._close_async(nid)
+                closing.add(nid)
+        # The removal mirror may run right after this for the same UID: it
+        # must not close these popups a second time.
+        popups = getattr(self, "_ancs_popups", {})
+        for nid in closing:
+            popups.pop(nid, None)
+        for nid in sorted(closing):
+            self._close_async(nid)
 
     def _track_ancs_popup(self, nid: int, uid: int) -> None:
         tracked = getattr(self, "_ancs_popups", None)
@@ -799,12 +811,20 @@ class LibnotifySink:
     def close_removed_ancs_popup(self, uid: int) -> None:
         """Mirror a removal on the iPhone: close every popup for this UID."""
         tracked = getattr(self, "_ancs_popups", {})
-        for nid in [nid for nid, value in tracked.items() if value == uid]:
+        closing = {nid for nid, value in tracked.items() if value == uid}
+        for table in (
+            getattr(self, "_ancs_actions", {}),
+            getattr(self, "_ancs_retries", {}),
+        ):
+            closing.update(nid for nid, value in table.items() if value[0] == uid)
+        # Each popup is closed once, even if it is an action popup tracked
+        # in two tables.
+        for nid in closing:
             tracked.pop(nid, None)
             getattr(self, "_ancs_actions", {}).pop(nid, None)
+            getattr(self, "_ancs_retries", {}).pop(nid, None)
+        for nid in sorted(closing):
             self._close_async(nid)
-        # "Action not completed" popups with a Retry button for this UID.
-        self.close_ancs_notification(uid)
 
     def forget_ancs_popups(self) -> None:
         """The ANCS UID session ended; its UIDs may name other notifications.

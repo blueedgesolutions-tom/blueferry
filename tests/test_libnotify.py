@@ -1445,3 +1445,35 @@ def test_ancs_popup_tracker_is_bounded_and_released_on_close(monkeypatch) -> Non
     newest = _notify_calls(server)[-1][1]
     server.signals["NotificationClosed"](newest, 2)
     assert newest not in sink._ancs_popups
+
+
+def test_action_popup_removal_closes_it_once_when_both_paths_run(
+    monkeypatch,
+) -> None:
+    # An actionable notification removed on the iPhone reaches the sink twice:
+    # the action path and the opt-in removal mirror. One close is enough.
+    sink, server = _action_sink(monkeypatch, enabled=True, callback=lambda *a: None)
+    sink.handle_ancs(_call_event())
+    nid = _notify_calls(server)[0][1]
+
+    sink.close_ancs_notification(42)
+    sink.close_removed_ancs_popup(42)
+    assert server.calls.count(("close", nid)) == 1
+
+    sink.handle_ancs(_call_event())
+    nid = _notify_calls(server)[-1][1]
+    sink.close_removed_ancs_popup(42)
+    sink.close_ancs_notification(42)
+    assert server.calls.count(("close", nid)) == 1
+
+
+def test_ancs_popup_without_a_uid_is_not_tracked(monkeypatch) -> None:
+    sink = LibnotifySink.__new__(LibnotifySink)
+    sink._notification_policy = lambda: "all"
+    sink._notif = _FakeNotifications()
+    monkeypatch.setattr(libnotify_mod.config, "SHOW_NOTIFICATION_CONTENT", True)
+    sink.handle_ancs(SimpleNamespace(
+        app_name="GitHub", app_id="com.github", title="t", subtitle="", body="b",
+    ))
+    assert sink._notif.calls
+    assert getattr(sink, "_ancs_popups", {}) == {}
