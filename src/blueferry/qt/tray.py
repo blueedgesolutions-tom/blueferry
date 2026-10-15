@@ -14,6 +14,7 @@ coalesced by a short timer.
 from __future__ import annotations
 
 import argparse
+import logging
 import shutil
 import signal
 import sys
@@ -65,6 +66,10 @@ ICON_SIZES = (16, 22, 24, 32, 48, 64)
 THREAD_LIMIT = 500
 CALL_TIMEOUT_MS = 10_000
 REFRESH_DELAY_MS = 150
+# Only used when the signal subscriptions failed: poll instead of going stale.
+FALLBACK_POLL_MS = 30_000
+
+log = logging.getLogger(__name__)
 
 Reply = Callable[[list], None]
 Failure = Callable[[str], None]
@@ -129,6 +134,8 @@ class TrayController(QObject):
         self._autostart_path = autostart_path or tray_autostart.entry_path()
         self._watchers: set[QDBusPendingCallWatcher] = set()
         self._daemon_owned: bool | None = None
+        # A new daemon owner has its own history: reload the unread count.
+        self._threads_stale = False
         self.status: BackendStatus | None = None
         self.error = ""
         self.unread = 0
@@ -168,11 +175,20 @@ class TrayController(QObject):
             QDBusServiceWatcher.WatchModeFlag.WatchForOwnerChange, self,
         )
         self._service_watcher.serviceOwnerChanged.connect(self._owner_changed)
-        for name, slot in (
-            ("StatusChanged", "_status_invalidated()"),
-            ("HistoryChanged", "_history_invalidated(QVariantMap)"),
-        ):
+        self.signals_connected = all(
             self._bus.connect(BUS_NAME, OBJECT_PATH, EVENTS_IFACE, name, self, SLOT(slot))
+            for name, slot in (
+                ("StatusChanged", "_status_invalidated()"),
+                ("HistoryChanged", "_history_invalidated(QVariantMap)"),
+            )
+        )
+        self._fallback_timer = QTimer(self)
+        self._fallback_timer.setInterval(FALLBACK_POLL_MS)
+        self._fallback_timer.timeout.connect(self._poll)
+        if not self.signals_connected:
+            # Without the signals the icon would never change again.
+            log.warning("could not subscribe to BlueFerry signals; polling instead")
+            self._fallback_timer.start()
         self.render()
 
     # ---- lifecycle ------------------------------------------------------
@@ -234,7 +250,15 @@ class TrayController(QObject):
 
     def _owner_changed(self, _name: str, _old: str, new: str) -> None:
         self._daemon_owned = bool(new)
+        # Both owner changes of a quick restart may fall into one coalesced
+        # refresh, which then still sees the old status.
+        self._threads_stale = True
         self._refresh_timer.start()
+
+    @Slot()
+    def _poll(self) -> None:
+        self._threads_stale = True
+        self.refresh()
 
     @Slot()
     def refresh(self) -> None:
@@ -304,11 +328,12 @@ class TrayController(QObject):
             self.error = _("The BlueFerry service needs an update.")
             self.render()
             return
-        first = self.status is None
+        reload_threads = self.status is None or self._threads_stale
+        self._threads_stale = False
         self.status = BackendStatus.from_dict(raw)
         self.error = ""
         self.render()
-        if first:
+        if reload_threads:
             self.refresh_threads()
 
     def apply_threads(self, payload: object) -> None:

@@ -67,9 +67,9 @@ def test_tooltip_lists_connection_battery_signal_network_and_unread() -> None:
 _SMOKE = textwrap.dedent("""
     import json, sys, time
     from pathlib import Path
-    from PySide6.QtDBus import QDBusConnection
+    from PySide6.QtDBus import QDBusConnection, QDBusMessage
     from PySide6.QtWidgets import QApplication
-    from blueferry.protocol import MESSAGES_API_VERSION
+    from blueferry.protocol import EVENTS_IFACE, MESSAGES_API_VERSION
     from blueferry.qt.tray import TrayController, badged_icon, phone_icon
 
     app = QApplication([])
@@ -78,9 +78,23 @@ _SMOKE = textwrap.dedent("""
            else QDBusConnection("not-connected"))
     launches = []
     entry = Path(sys.argv[2]) / "autostart" / "io.weirdware.BlueFerry.Tray.desktop"
-    tray = TrayController(
+    refreshes, thread_loads = [], []
+
+    class CountingTray(TrayController):
+        def refresh(self):
+            refreshes.append(1)
+            super().refresh()
+
+        def refresh_threads(self):
+            thread_loads.append(1)
+            super().refresh_threads()
+
+    tray = CountingTray(
         bus, launch=lambda: launches.append(1) or True, autostart_path=entry,
     )
+    # The subscriptions only fail without a bus; then the tray polls.
+    assert tray.signals_connected is bool(address), tray.signals_connected
+    assert tray._fallback_timer.isActive() is (not address)
     tray.tray.setVisible(True)  # so hiding must come from the bus reply
     tray.start()
     for _ in range(100):  # the ListActivatableNames reply is asynchronous
@@ -110,6 +124,39 @@ _SMOKE = textwrap.dedent("""
     assert tray.autostart_action.isChecked() and entry.is_file()
     tray.autostart_action.trigger()
     assert not tray.autostart_action.isChecked() and not entry.exists()
+
+    # A daemon restart (new owner) reloads the unread count with the next
+    # status, even when the coalesced refresh still saw the old status.
+    status = json.dumps({"api_version": MESSAGES_API_VERSION, "map": True})
+    thread_loads.clear()
+    tray.apply_status(status)
+    assert thread_loads == [], thread_loads
+    tray._owner_changed("io.weirdware.BlueFerry", ":1.1", ":1.2")
+    tray.apply_status(status)
+    assert thread_loads == [1], thread_loads
+    tray.apply_status(status)
+    assert thread_loads == [1], thread_loads
+
+    if address:
+        # A content-free StatusChanged from the daemon's owner refreshes.
+        daemon = QDBusConnection.connectToBus(address, "tray-smoke-daemon")
+        assert daemon.registerService("io.weirdware.BlueFerry")
+        for _ in range(50):
+            app.processEvents()
+            time.sleep(0.01)
+        refreshes.clear()
+        signal = QDBusMessage.createSignal(
+            "/io/weirdware/BlueFerry", EVENTS_IFACE, "StatusChanged",
+        )
+        assert daemon.send(signal)
+        for _ in range(100):
+            app.processEvents()
+            time.sleep(0.01)
+            if refreshes:
+                break
+        assert refreshes, "StatusChanged did not refresh the tray"
+        daemon.unregisterService("io.weirdware.BlueFerry")
+        tray.apply_status(status)
 
     tray.apply_status(json.dumps({"api_version": 0}))
     assert "needs an update" in tray.tray.toolTip()
