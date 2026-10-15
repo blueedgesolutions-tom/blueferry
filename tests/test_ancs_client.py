@@ -2439,3 +2439,52 @@ def test_control_point_writes_force_a_plain_write_request(monkeypatch) -> None:
         assert options.signature == "sv"
         assert dict(options) == {"type": "request"}
         assert isinstance(options["type"], client_module.dbus.String)
+
+
+def _removal(uid: int) -> bytes:
+    return struct.pack("<BBBBI", EventID.NotificationRemoved, 0, 4, 1, uid)
+
+
+def test_every_removal_and_session_end_is_reported(monkeypatch) -> None:
+    seen: list[tuple] = []
+    client, _cp, _emitted = _action_client(monkeypatch, enabled=False)
+    client._on_removed = lambda uid: seen.append(("removed", uid))
+    client._on_session_reset = lambda: seen.append(("reset",))
+    client._pump_requests = lambda: None
+
+    # Not only actionable notifications: every removal is reported.
+    client._on_ns_changed("org.bluez.GattCharacteristic1", {"Value": _removal(5)}, [])
+    # A PreExisting replay at the start of a session is not a new session.
+    client._on_ns_changed(
+        "org.bluez.GattCharacteristic1",
+        {"Value": _notification(7, flags=EventFlag.PreExisting)}, [],
+    )
+    assert seen == [("removed", 5)]
+    # After a live event, a PreExisting replay means iOS started a new
+    # session without an LE transition we observed.
+    client._on_ns_changed("org.bluez.GattCharacteristic1", {"Value": _notification(8)}, [])
+    client._on_ns_changed(
+        "org.bluez.GattCharacteristic1",
+        {"Value": _notification(9, flags=EventFlag.PreExisting)}, [],
+    )
+    client._on_ns_changed(
+        "org.bluez.GattCharacteristic1",
+        {"Value": _notification(10, flags=EventFlag.PreExisting)}, [],
+    )
+    assert seen == [("removed", 5), ("reset",)]
+    # Tearing the subscription down ends the session too.
+    client._clear_characteristic_subscription(stop_notify=False)
+    assert seen == [("removed", 5), ("reset",), ("reset",)]
+
+
+def test_failing_session_callbacks_never_break_the_ancs_client(monkeypatch) -> None:
+    client, _cp, _emitted = _action_client(monkeypatch, enabled=False)
+
+    def boom(*_args):
+        raise RuntimeError("sink broke")
+
+    client._on_removed = boom
+    client._on_session_reset = boom
+    client._on_ns_changed("org.bluez.GattCharacteristic1", {"Value": _removal(3)}, [])
+    client._clear_characteristic_subscription(stop_notify=False)
+    assert not client._authorized

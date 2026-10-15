@@ -229,6 +229,8 @@ class AncsClient:
         notification_actions: bool | Callable[[], bool] = False,
         on_notification_removed: Callable[[int], None] | None = None,
         on_actions_reset: Callable[[], None] | None = None,
+        on_removed: Callable[[int], None] | None = None,
+        on_session_reset: Callable[[], None] | None = None,
         schedule: Callable[[int, Callable[[], bool]], int] = GLib.timeout_add_seconds,
         cancel: Callable[[int], object] = GLib.source_remove,
         clock: Callable[[], float] = time.monotonic,
@@ -254,6 +256,14 @@ class AncsClient:
         self._notification_actions_setting = notification_actions
         self._on_notification_removed = on_notification_removed
         self._on_actions_reset = on_actions_reset
+        # For clients that follow the iPhone's list: every removal (not only
+        # actionable ones) and the end of a UID session, after which the old
+        # UIDs may name other notifications.
+        self._on_removed = on_removed
+        self._on_session_reset = on_session_reset
+        # Set once the current session delivered a live (not PreExisting)
+        # event; a later PreExisting replay then means a new session.
+        self._live_events_seen = False
 
         # Char path slots — set as InterfacesAdded fires
         self._ns_path: str | None = None
@@ -782,6 +792,7 @@ class AncsClient:
         self._authorized = False
         self._reset_requests()
         self._reset_actions()
+        self._end_session()
 
     def _stop_bluez_notifications(self) -> None:
         """Remove notification ownership created by us while ATT is up."""
@@ -907,6 +918,7 @@ class AncsClient:
         self._notify_started = True
         # A fresh Notification Source subscription starts a new UID session.
         self._reset_actions()
+        self._end_session()
         log.info(
             "ANCS characteristic subscriptions active; requesting notification access"
         )
@@ -1108,6 +1120,7 @@ class AncsClient:
         self._forget_actionable(n.id)
         if n.type == EventID.NotificationRemoved:
             log.debug("ANCS removed uid=%d", n.id)
+            self._session_callback(self._on_removed, n.id)
             return
         # Skip pre-existing (notifications that already existed on the
         # iPhone at our connect time — too noisy on initial subscribe).
@@ -1119,7 +1132,10 @@ class AncsClient:
             if self._actionable:
                 log.info("ANCS session replay seen; retiring notification actions")
                 self._reset_actions()
+            if self._live_events_seen:
+                self._end_session()
             return
+        self._live_events_seen = True
         # Added or Modified → identify the source app without content first.
         self._categories[n.id] = n.category
         self._categories.move_to_end(n.id)
@@ -1662,6 +1678,20 @@ class AncsClient:
             callback(notification_id)
         except Exception:
             log.exception("ANCS notification-removed callback raised")
+
+    def _end_session(self) -> None:
+        """The UID session ended: its UIDs may name other notifications next."""
+        self._live_events_seen = False
+        self._session_callback(self._on_session_reset)
+
+    @staticmethod
+    def _session_callback(callback: Callable[..., None] | None, *args: int) -> None:
+        if callback is None:
+            return
+        try:
+            callback(*args)
+        except Exception:
+            log.exception("ANCS session callback raised")
 
     def _drop_queued_actions(
         self,
