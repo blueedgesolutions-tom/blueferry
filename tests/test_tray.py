@@ -66,6 +66,7 @@ def test_tooltip_lists_connection_battery_signal_network_and_unread() -> None:
 
 _SMOKE = textwrap.dedent("""
     import json, sys, time
+    from pathlib import Path
     from PySide6.QtDBus import QDBusConnection
     from PySide6.QtWidgets import QApplication
     from blueferry.protocol import MESSAGES_API_VERSION
@@ -76,7 +77,10 @@ _SMOKE = textwrap.dedent("""
     bus = (QDBusConnection.connectToBus(address, "tray-smoke") if address
            else QDBusConnection("not-connected"))
     launches = []
-    tray = TrayController(bus, launch=lambda: launches.append(1) or True)
+    entry = Path(sys.argv[2]) / "autostart" / "io.weirdware.BlueFerry.Tray.desktop"
+    tray = TrayController(
+        bus, launch=lambda: launches.append(1) or True, autostart_path=entry,
+    )
     tray.tray.setVisible(True)  # so hiding must come from the bus reply
     tray.start()
     for _ in range(100):  # the ListActivatableNames reply is asynchronous
@@ -99,7 +103,13 @@ _SMOKE = textwrap.dedent("""
     lines = tray.tray.toolTip().splitlines()
     assert lines == ["iPhone connected", "Battery: 87 %", "2 unread messages"], lines
     texts = [action.text() for action in tray.menu.actions() if not action.isSeparator()]
-    assert texts[0] == "Open BlueFerry" and texts[-1] == "Quit", texts
+    assert texts == ["Open BlueFerry", "Start at login", "Quit"], texts
+    # Autostart is opt-in: off until the user checks it, then a user entry.
+    assert not tray.autostart_action.isChecked() and not entry.exists()
+    tray.autostart_action.trigger()
+    assert tray.autostart_action.isChecked() and entry.is_file()
+    tray.autostart_action.trigger()
+    assert not tray.autostart_action.isChecked() and not entry.exists()
 
     tray.apply_status(json.dumps({"api_version": 0}))
     assert "needs an update" in tray.tray.toolTip()
@@ -118,7 +128,7 @@ _SMOKE = textwrap.dedent("""
 
 @needs_pyside6
 @pytest.mark.parametrize("use_private_bus", [False, True])
-def test_tray_smoke_offscreen(use_private_bus: bool) -> None:
+def test_tray_smoke_offscreen(use_private_bus: bool, tmp_path: Path) -> None:
     address = os.environ.get("BLUEFERRY_TEST_DBUS_ADDRESS", "") if use_private_bus else ""
     if use_private_bus and not address:
         pytest.skip("needs the private dbus-run-session test bus")
@@ -127,11 +137,35 @@ def test_tray_smoke_offscreen(use_private_bus: bool) -> None:
         "QT_QPA_PLATFORM": "offscreen",
         "PYTHONPATH": str(ROOT / "src"),
         "LANGUAGE": "C",
+        "XDG_CONFIG_HOME": str(tmp_path),
     }
     if not use_private_bus:
         env["DBUS_SESSION_BUS_ADDRESS"] = "unix:path=/tmp/blueferry-tests-no-live-bus"
     result = subprocess.run(  # nosec B603 - fixed interpreter and script
-        [sys.executable, "-c", _SMOKE, address],
+        [sys.executable, "-c", _SMOKE, address, str(tmp_path)],
         env=env, capture_output=True, text=True, timeout=60, check=False,
     )
     assert "SMOKE-OK" in result.stdout, result.stdout + result.stderr
+
+
+@needs_pyside6
+@pytest.mark.parametrize(("choice", "output", "exists"), [
+    ("status", "off", False), ("on", "on", True), ("off", "off", False),
+])
+def test_autostart_command_line(tmp_path: Path, choice: str, output: str, exists: bool) -> None:
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(ROOT / "src"),
+        "LANGUAGE": "C",
+        "XDG_CONFIG_HOME": str(tmp_path),
+        "DBUS_SESSION_BUS_ADDRESS": "unix:path=/tmp/blueferry-tests-no-live-bus",
+    }
+    if choice == "off":
+        (tmp_path / "autostart").mkdir()
+        (tmp_path / "autostart" / "io.weirdware.BlueFerry.Tray.desktop").write_text("")
+    result = subprocess.run(  # nosec B603 - fixed interpreter and module
+        [sys.executable, "-m", "blueferry.qt.tray", f"--autostart={choice}"],
+        env=env, capture_output=True, text=True, timeout=60, check=False,
+    )
+    assert (result.returncode, result.stdout.strip()) == (0, output), result.stderr
+    assert (tmp_path / "autostart" / "io.weirdware.BlueFerry.Tray.desktop").exists() is exists

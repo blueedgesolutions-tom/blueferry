@@ -3,7 +3,7 @@
 Under Plasma ``QSystemTrayIcon`` becomes a StatusNotifierItem. The icon is a
 phone with the number of unread messages painted over it, the tooltip shows
 the connection plus battery, signal and network, and the menu opens the Qt
-client or quits the tray.
+client, switches the tray's own autostart entry and quits the tray.
 
 The tray is a thin client of the existing session-bus API. Every call is
 asynchronous and sent with auto-start disabled: it follows a running daemon
@@ -13,10 +13,12 @@ coalesced by a short timer.
 """
 from __future__ import annotations
 
+import argparse
 import shutil
 import signal
 import sys
 from collections.abc import Callable
+from pathlib import Path
 
 from PySide6.QtCore import (
     SLOT,
@@ -37,6 +39,7 @@ from PySide6.QtDBus import (
 from PySide6.QtGui import QAction, QColor, QFont, QFontMetrics, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication, QMenu, QStyle, QSystemTrayIcon
 
+from blueferry import tray_autostart
 from blueferry.client_activation import (
     ACTIVATION_INTERFACE,
     ACTIVATION_PATH,
@@ -118,10 +121,12 @@ class TrayController(QObject):
         *,
         parent: QObject | None = None,
         launch: Callable[[], bool] | None = None,
+        autostart_path: Path | None = None,
     ) -> None:
         super().__init__(parent)
         self._bus = bus if bus is not None else QDBusConnection.sessionBus()
         self._launch = launch or launch_qt_client
+        self._autostart_path = autostart_path or tray_autostart.entry_path()
         self._watchers: set[QDBusPendingCallWatcher] = set()
         self._daemon_owned: bool | None = None
         self.status: BackendStatus | None = None
@@ -133,11 +138,19 @@ class TrayController(QObject):
         self.menu = QMenu()
         self.open_action = QAction(_("Open BlueFerry"), self.menu)
         self.open_action.triggered.connect(self.open_app)
+        self.autostart_action = QAction(_("Start at login"), self.menu)
+        self.autostart_action.setCheckable(True)
+        self.autostart_action.triggered.connect(self._autostart_triggered)
         self.quit_action = QAction(_("Quit"), self.menu)
         self.quit_action.triggered.connect(QApplication.quit)
         self.menu.addAction(self.open_action)
         self.menu.addSeparator()
+        self.menu.addAction(self.autostart_action)
+        self.menu.addSeparator()
         self.menu.addAction(self.quit_action)
+        # The desktop's own autostart settings may change the entry too.
+        self.menu.aboutToShow.connect(self.render_autostart)
+        self.render_autostart()
         self.tray.setContextMenu(self.menu)
         self.tray.activated.connect(self._activated)
 
@@ -313,7 +326,21 @@ class TrayController(QObject):
         ))
         self.tray.setToolTip(presenter.tooltip(self.status, self.unread, self.error))
 
+    @Slot()
+    def render_autostart(self) -> None:
+        self.autostart_action.setChecked(tray_autostart.is_enabled(self._autostart_path))
+
     # ---- actions --------------------------------------------------------
+
+    def _autostart_triggered(self, checked: bool) -> None:
+        try:
+            tray_autostart.set_enabled(bool(checked), self._autostart_path)
+        except OSError:
+            self.tray.showMessage(
+                "BlueFerry", _("Could not change the autostart entry."),
+                QSystemTrayIcon.MessageIcon.Warning, 5000,
+            )
+        self.render_autostart()
 
     def _activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
@@ -351,8 +378,35 @@ def name_registered(bus: QDBusConnection, name: str) -> bool:
     return bool(reply.isValid() and reply.value())
 
 
+def _parse_arguments(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
+    parser = argparse.ArgumentParser(
+        prog="blueferry-tray",
+        description=_("BlueFerry's iPhone status and unread messages in the system tray."),
+    )
+    parser.add_argument(
+        "--autostart", choices=("on", "off", "status"),
+        help=_("start the tray at login (on), stop doing so (off), or show the setting"),
+    )
+    return parser.parse_known_args(argv)
+
+
+def _autostart_command(choice: str) -> int:
+    path = tray_autostart.entry_path()
+    if choice != "status":
+        try:
+            tray_autostart.set_enabled(choice == "on", path)
+        except OSError as error:
+            print(f"blueferry-tray: {error.strerror or error}", file=sys.stderr)
+            return 1
+    print("on" if tray_autostart.is_enabled(path) else "off")
+    return 0
+
+
 def main() -> int:
-    application = QApplication([sys.argv[0], *sys.argv[1:]])
+    args, qt_args = _parse_arguments(sys.argv[1:])
+    if args.autostart:
+        return _autostart_command(args.autostart)
+    application = QApplication([sys.argv[0], *qt_args])
     application.setApplicationName("blueferry-tray")
     application.setApplicationDisplayName("BlueFerry")
     application.setDesktopFileName("io.weirdware.BlueFerry.Tray")
