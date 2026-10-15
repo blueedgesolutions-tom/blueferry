@@ -15,7 +15,9 @@ before a reviewer has to:
     ``time.sleep``, ``subprocess.run``/``call``/``check_call``/
     ``check_output`` without a short ``timeout``, ``sqlite3.connect``
     without a short ``timeout`` (its default lock wait is five seconds), or
-    a synchronous Gio D-Bus API (``call_sync``, ``bus_get_sync``).
+    a synchronous Gio D-Bus API (``call_sync``, ``bus_get_sync``). Import
+    aliases are resolved, so ``from time import sleep`` or ``import
+    subprocess as sp`` is caught too.
 ``untyped-empty``
     A bare ``{}``/``[]`` passed to a D-Bus method, or ``dbus.Dictionary``/
     ``dbus.Array`` built without ``signature=``. With ``introspect=False``
@@ -324,6 +326,23 @@ def _imported_names(tree: ast.Module) -> set[str]:
     return names
 
 
+def _import_aliases(tree: ast.Module) -> dict[str, str]:
+    """Local name -> dotted name it stands for, for ``import x as y`` and
+    ``from x import y [as z]``, so ``from time import sleep`` or
+    ``import subprocess as sp`` cannot hide a blocking call."""
+    aliases: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.asname:
+                    aliases[alias.asname] = alias.name
+        elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+            for alias in node.names:
+                if alias.name != "*":
+                    aliases[alias.asname or alias.name] = f"{node.module}.{alias.name}"
+    return aliases
+
+
 def _is_empty_container(node: ast.AST) -> bool:
     return (
         (isinstance(node, ast.Dict) and not node.keys)
@@ -338,6 +357,7 @@ class _Visitor(ast.NodeVisitor):
         self.main_loop = main_loop
         self.constants = _numeric_constants(tree)
         self.imported = _imported_names(tree)
+        self.aliases = _import_aliases(tree)
         self.scope: list[str] = []
         self.findings: list[Finding] = []
 
@@ -371,7 +391,7 @@ class _Visitor(ast.NodeVisitor):
         name = _dotted(node.func)
         keywords = {keyword.arg for keyword in node.keywords}
         if self.main_loop:
-            self._check_blocking(node, name)
+            self._check_blocking(node, self._resolve(name))
         if isinstance(node.func, ast.Attribute):
             attr = node.func.attr
             if name in ("dbus.Dictionary", "dbus.Array") and "signature" not in keywords:
@@ -409,8 +429,17 @@ class _Visitor(ast.NodeVisitor):
         root = _dotted(receiver)
         return not (root and root.split(".")[0] in self.imported)
 
+    def _resolve(self, name: str | None) -> str | None:
+        if not name:
+            return name
+        head, dot, rest = name.partition(".")
+        target = self.aliases.get(head)
+        return f"{target}{dot}{rest}" if target else name
+
     def _check_blocking(self, node: ast.Call, name: str | None) -> None:
-        attr = node.func.attr if isinstance(node.func, ast.Attribute) else name
+        attr = node.func.attr if isinstance(node.func, ast.Attribute) else (
+            name.rpartition(".")[2] if name else name
+        )
         if attr in _GIO_SYNC:
             self._report(node, "blocking", f"synchronous Gio D-Bus call {attr}() on the main loop")
         elif name == "time.sleep":

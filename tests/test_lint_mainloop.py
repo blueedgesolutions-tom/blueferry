@@ -140,3 +140,45 @@ def test_bus_helpers_and_gio_sync_calls_are_reported_on_the_loop(tmp_path) -> No
         ("blueferry.daemon", "gio", "blocking"),
         *[("blueferry.daemon", "helpers", "sync-dbus")] * 4,
     ]
+
+
+def test_imported_aliases_of_blocking_calls_are_reported(tmp_path) -> None:
+    package = _package(
+        tmp_path,
+        daemon="""
+            import subprocess as sp
+            import time as clock
+            from sqlite3 import connect
+            from subprocess import run as run_command
+            from time import sleep
+            from time import sleep as nap
+
+            def bare():
+                sleep(1)
+
+            def renamed():
+                nap(1)
+
+            def module_alias():
+                clock.sleep(1)
+
+            def subprocess_aliases():
+                sp.run(["true"])
+                run_command(["true"])
+                sp.run(["true"], timeout=1)
+
+            def sqlite_alias(path):
+                connect(path)
+
+            def unrelated(sleep_ms):
+                sleep_ms(1)
+        """,
+    )
+    assert _rules(package) == [
+        ("blueferry.daemon", "bare", "blocking"),
+        ("blueferry.daemon", "module_alias", "blocking"),
+        ("blueferry.daemon", "renamed", "blocking"),
+        ("blueferry.daemon", "sqlite_alias", "blocking"),
+        ("blueferry.daemon", "subprocess_aliases", "blocking"),
+        ("blueferry.daemon", "subprocess_aliases", "blocking"),
+    ]
