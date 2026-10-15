@@ -173,3 +173,54 @@ def test_a_failed_inventory_still_arms_the_open_grace(monkeypatch):
     replies[0]["error_handler"](RuntimeError("obexd gone"))
 
     assert harness.delays() == [mns_watch.OPEN_GRACE_SECONDS]
+
+
+def test_inventory_does_not_resurrect_a_removed_session(monkeypatch):
+    harness = _Harness(monkeypatch)
+    replies = []
+    monkeypatch.setattr(
+        mns_watch.dbus, "Interface",
+        lambda *_a: SimpleNamespace(GetManagedObjects=lambda **k: replies.append(k)),
+    )
+    harness.watch.start()
+    harness.removed(MNS_PATH)
+    replies[0]["reply_handler"]({MNS_PATH: _mns()})
+
+    assert not harness.watch.connected
+    assert harness.present == []
+    assert harness.delays() == [mns_watch.OPEN_GRACE_SECONDS]
+
+
+def test_inventory_preserves_a_live_signal_and_its_loss_timer(monkeypatch):
+    harness = _Harness(monkeypatch)
+    replies = []
+    monkeypatch.setattr(
+        mns_watch.dbus, "Interface",
+        lambda *_a: SimpleNamespace(GetManagedObjects=lambda **k: replies.append(k)),
+    )
+    harness.watch.start()
+    harness.added(MNS_PATH, _mns())
+    harness.removed(MNS_PATH)
+    timers = dict(harness.timers)
+    replies[0]["reply_handler"]({MNS_PATH: _mns()})
+
+    assert not harness.watch.connected
+    assert harness.present == [True]
+    assert harness.timers == timers
+    harness.fire()
+    assert harness.missing == ["the iPhone closed MAP notifications"]
+
+
+def test_inventory_does_not_report_a_signalled_session_twice(monkeypatch):
+    harness = _Harness(monkeypatch)
+    replies = []
+    monkeypatch.setattr(
+        mns_watch.dbus, "Interface",
+        lambda *_a: SimpleNamespace(GetManagedObjects=lambda **k: replies.append(k)),
+    )
+    harness.watch.start()
+    harness.added(MNS_PATH, _mns())
+    replies[0]["reply_handler"]({MNS_PATH: _mns()})
+
+    assert harness.watch.connected
+    assert harness.present == [True]

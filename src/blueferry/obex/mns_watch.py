@@ -56,6 +56,7 @@ class MnsWatch:
         self._timer_id: int | None = None
         self._running = False
         self._generation = 0
+        self._inventory_changes: set[str] | None = None
 
     @property
     def connected(self) -> bool:
@@ -64,6 +65,7 @@ class MnsWatch:
     def start(self) -> None:
         bus = get_session_bus()
         self._running = True
+        self._inventory_changes = set()
         # Subscribe before the inventory so a connection cannot fall between.
         self._matches = [
             bus.add_signal_receiver(
@@ -85,9 +87,14 @@ class MnsWatch:
         def listed(objects) -> None:
             if not self._running or generation != self._generation:
                 return  # stopped or restarted while obexd answered
+            changed = self._inventory_changes or set()
+            self._inventory_changes = None
             for path, interfaces in objects.items():
-                self._on_interfaces_added(path, interfaces)
-            if not self._sessions:
+                # Signals received during the inventory supersede its
+                # snapshot, including removal of a previously unknown path.
+                if str(path) not in changed:
+                    self._on_interfaces_added(path, interfaces)
+            if not self._sessions and self._timer_id is None:
                 self._arm(OPEN_GRACE_SECONDS, "the iPhone did not open MAP notifications")
 
         def failed(error: Exception) -> None:
@@ -106,6 +113,7 @@ class MnsWatch:
     def stop(self) -> None:
         self._running = False
         self._generation += 1
+        self._inventory_changes = None
         self._disarm()
         for match in self._matches:
             try:
@@ -118,6 +126,7 @@ class MnsWatch:
     def _on_interfaces_added(self, path, interfaces) -> None:
         path_s = str(path)
         props = interfaces.get(SESSION_INTERFACE)
+        self._record_inventory_change(path_s, interfaces)
         if (
             not self._running
             or props is None
@@ -133,6 +142,7 @@ class MnsWatch:
 
     def _on_interfaces_removed(self, path, interfaces) -> None:
         path_s = str(path)
+        self._record_inventory_change(path_s, interfaces)
         if (
             not self._running
             or path_s not in self._sessions
@@ -143,6 +153,12 @@ class MnsWatch:
         log.warning("iPhone MAP notifications disconnected (%s)", path_s)
         if not self._sessions:
             self._arm(LOSS_GRACE_SECONDS, "the iPhone closed MAP notifications")
+
+    def _record_inventory_change(self, path: str, interfaces) -> None:
+        if (self._inventory_changes is not None
+                and path.startswith(SERVER_SESSION_PREFIX)
+                and SESSION_INTERFACE in interfaces):
+            self._inventory_changes.add(path)
 
     def _arm(self, delay: int, reason: str) -> None:
         self._disarm()
