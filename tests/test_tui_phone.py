@@ -92,6 +92,51 @@ def test_media_line_and_keys_follow_the_opt_in_and_supported_commands() -> None:
     _run_headless(scenario())
 
 
+class _MediaMonitor:
+    def __init__(self) -> None:
+        self.pending = False
+
+    def pump(self):
+        return False, None
+
+    def take_now_playing_changed(self) -> bool:
+        pending, self.pending = self.pending, False
+        return pending
+
+    def close(self) -> None:
+        pass
+
+
+def test_status_refresh_does_not_refetch_now_playing() -> None:
+    backend = _PhoneBackend(media_control_enabled=True)
+    monitor = _MediaMonitor()
+
+    async def scenario() -> None:
+        app = BlueFerryApp(TuiState(backend), monitor_factory=lambda: monitor)
+        async with app.run_test(size=(120, 36)) as pilot:
+            await _until(pilot, lambda: backend.now_playing_calls == 1)
+            # A changed status (here: a battery reading) is no reason to fetch.
+            backend.extra["phone_battery"] = 40
+            await pilot.press("r")
+            await _until(pilot, lambda: app.state.status.extra.get("phone_battery") == 40)
+            await pilot.pause(0.2)
+            assert backend.now_playing_calls == 1
+
+            # NowPlayingChanged is.
+            monitor.pending = True
+            await _until(pilot, lambda: backend.now_playing_calls == 2)
+
+            # So is the opt-in switching, which the daemon also signals.
+            backend.extra["media_control_enabled"] = False
+            await pilot.press("r")
+            await _until(pilot, lambda: app.query_one("#now-playing").display is False)
+            backend.extra["media_control_enabled"] = True
+            await pilot.press("r")
+            await _until(pilot, lambda: backend.now_playing_calls == 3)
+
+    _run_headless(scenario())
+
+
 def test_media_stays_hidden_and_silent_without_the_opt_in() -> None:
     backend = _PhoneBackend()
 

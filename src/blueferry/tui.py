@@ -652,6 +652,7 @@ class BlueFerryApp(App[None]):
         self._deleting = False
         self._announced_calls: set[str] = set()
         self.now_playing = phone_overview.now_playing(None)
+        self._now_playing_key: tuple[bool, bool] | None = None
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="masthead"):
@@ -976,7 +977,13 @@ class BlueFerryApp(App[None]):
         storage = self.query_one("#storage-status", Static)
         storage.update(f"STORAGE  {status.storage_state.upper()}")
         storage.set_classes(f"status-pill {'ok' if storage_ok else 'warn'}")
-        self._load_now_playing()
+        # NowPlayingChanged covers track and player changes. Fetch here only
+        # when there is nothing to have signalled yet: the first status, the
+        # media opt-in switching, or the daemon coming (back) up.
+        media_key = (status.daemon, phone_overview.media_control_enabled(status.to_dict()))
+        if media_key != self._now_playing_key:
+            self._now_playing_key = media_key
+            self._load_now_playing()
 
     def _set_pill(self, selector: str, label: str, active: bool) -> None:
         pill = self.query_one(selector, Static)
