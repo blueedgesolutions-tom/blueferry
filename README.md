@@ -862,8 +862,9 @@ takes precedence. `BLUEFERRY_CALL_HISTORY_INTERVAL_SEC` (60–86400, default
   notification history.
 
 View the list with `blueferry call-history` (`--missed`, `--limit N`,
-`--sync` to refresh from the iPhone first) or **Recent Calls** in the KDE
-client's menu. The GTK, terminal, and Quickshell clients do not show it yet.
+`--sync` to refresh from the iPhone first), **Recent Calls** in the KDE
+client's menu, the **iPhone** dialog of the GTK client (`Ctrl+I`), or `h` in
+the terminal client. The Quickshell client does not show it yet.
 ## iPhone media control (optional)
 
 BlueFerry can show what the iPhone is playing and send play, pause, next,
@@ -882,8 +883,12 @@ blueferry media toggle     # also: play, pause, next, previous, volume-up,
 ```
 
 Only commands the iPhone currently offers are sent; for example, like/dislike
-exist only for players that advertise them. The Kirigami client shows a small
-now-playing bar above the conversations while a player is active.
+exist only for players that advertise them. While a player is active, the
+Kirigami client shows a small now-playing bar above the conversations, the
+Quickshell client a strip under its header, the GTK client a **Now Playing**
+row in its **iPhone** dialog (`Ctrl+I`), and the terminal client a line under
+its status pills (`p`, `[` and `]` play/pause, go back and skip). No client
+asks for now playing while the option is off.
 
 With the MPRIS option (`blueferry media enable-mpris`, or the second
 checkbox under **Media Control**), BlueFerry registers

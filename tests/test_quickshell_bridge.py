@@ -496,6 +496,61 @@ def test_bridge_saves_the_call_history_opt_in_and_returns_its_status() -> None:
     assert len(client.calls) == 1
 
 
+def test_bridge_reduces_now_playing_to_booleans_and_verbatim_text() -> None:
+    snapshot = {
+        "enabled": True, "available": True,
+        "player": {"state": "playing"},
+        "track": {"title": "<b>Song</b>", "artist": "Band"},
+        "supported_commands": ["pause", "next"],
+    }
+    bridge = QuickshellBridge(SimpleNamespace(now_playing=lambda: snapshot))  # type: ignore[arg-type]
+
+    result = bridge.dispatch("now_playing", {})
+    assert result == {
+        "visible": True, "playing": True, "title": "<b>Song</b>", "artist": "Band",
+        "idle": False, "previous": False, "toggle": True, "next": True,
+    }
+    # No arrays reach QML, whatever the Qt version does with them.
+    assert not any(isinstance(value, list | tuple) for value in result.values())
+    assert json.loads(json.dumps(result)) == result
+
+
+@pytest.mark.parametrize("snapshot", [
+    {"enabled": False, "available": False, "detail": "disabled"},
+    {"enabled": True, "available": False, "detail": "waiting-for-iphone"},
+])
+def test_bridge_hides_now_playing_until_the_media_service_is_available(snapshot) -> None:
+    bridge = QuickshellBridge(SimpleNamespace(now_playing=lambda: snapshot))  # type: ignore[arg-type]
+
+    assert bridge.dispatch("now_playing", {}) == {
+        "visible": False, "playing": False, "title": "", "artist": "", "idle": False,
+        "previous": False, "toggle": False, "next": False,
+    }
+
+
+def test_bridge_marks_an_idle_player() -> None:
+    snapshot = {"enabled": True, "available": True, "player": {}, "track": {}}
+    bridge = QuickshellBridge(SimpleNamespace(now_playing=lambda: snapshot))  # type: ignore[arg-type]
+
+    assert bridge.dispatch("now_playing", {})["idle"] is True
+
+
+def test_bridge_sends_only_the_transport_media_commands() -> None:
+    sent: list[str] = []
+    bridge = QuickshellBridge(SimpleNamespace(send_media_command=sent.append))  # type: ignore[arg-type]
+
+    assert bridge.dispatch("media_command", {"command": "next"}) is None
+    for args, message in (
+        ({}, "command must be a string"),
+        ({"command": 1}, "command must be a string"),
+        ({"command": "volume-up"}, "unsupported media command"),
+        ({"command": "like"}, "unsupported media command"),
+    ):
+        with pytest.raises(ValueError, match=message):
+            bridge.dispatch("media_command", args)
+    assert sent == ["next"]
+
+
 def test_bridge_saves_the_contact_photo_opt_in() -> None:
     client = FakeClient()
     client.set_contact_photos = lambda enabled: (  # type: ignore[attr-defined]

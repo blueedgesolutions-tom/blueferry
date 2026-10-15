@@ -18,6 +18,8 @@ ShellRoot {
   property string errorText: ""
   property bool phoneSettingsVisible: false
   property var backendStatus: ({})
+  // Opt-in iPhone now playing as reduced by the bridge; empty while off.
+  property var nowPlaying: ({})
   // Host fact from the bridge; kept when backendStatus is reset because the
   // daemon is unavailable. undefined means an older bridge did not send it.
   property var bluetoothRestartCommand: undefined
@@ -77,6 +79,21 @@ ShellRoot {
       statusBusy = true
       backendBridge.request("status", {})
     }
+  }
+
+  // Like the Qt client: no Media1 call unless the user opted in.
+  function refreshNowPlaying() {
+    if (root.backendStatus.media_control_enabled === true) {
+      backendBridge.requestLatest("now_playing", {})
+    } else {
+      backendBridge.cancelLatest("now_playing")
+      root.nowPlaying = ({})
+    }
+  }
+
+  function applyNowPlaying(result) {
+    root.nowPlaying = root.backendStatus.media_control_enabled === true
+      && typeof result === "object" && result !== null ? result : ({})
   }
 
   function searchContacts(query) {
@@ -181,6 +198,8 @@ ShellRoot {
 
   function markStatusUnavailable(message) {
     backendStatus = ({})
+    backendBridge.cancelLatest("now_playing")
+    nowPlaying = ({})
     statusErrorText = message
   }
 
@@ -257,6 +276,7 @@ ShellRoot {
         root.storageDetail = result.storage_detail || "Storage status unavailable"
         root.statusErrorText = ""
         root.maybeUnlockStorage()
+        root.refreshNowPlaying()
       } else if (method === "threads") {
         if (!root.threadsBusy || requestId !== root.threadsRequestId) return
         root.threadsRequestId = 0
@@ -299,6 +319,10 @@ ShellRoot {
         // HistoryChanged reloads the thread list.
       } else if (method === "set_thread_starred") {
         // HistoryChanged reloads the thread list.
+      } else if (method === "now_playing") {
+        root.applyNowPlaying(result)
+      } else if (method === "media_command") {
+        // NowPlayingChanged refreshes the strip.
       } else if (method === "delete_threads") {
         root.deleteThreadsBusy = false
         root.reload()
@@ -401,6 +425,11 @@ ShellRoot {
         root.errorText = message
       } else if (method === "mark_thread_read") {
         // Keep the conversation open even if MAP write-back fails.
+      } else if (method === "now_playing") {
+        root.nowPlaying = ({})
+      } else if (method === "media_command") {
+        root.errorText = message || "Could not control iPhone playback"
+        root.refreshNowPlaying()
       } else if (method === "set_thread_starred") {
         root.errorText = message || "Could not update starred conversations"
       } else if (method === "delete_threads") {
@@ -490,6 +519,7 @@ ShellRoot {
       data = root.plainValue(data)
       if (name === "open-message") root.openMessage(String(data || ""))
       else if (name === "history-changed" || name === "status-changed") root.reload()
+      else if (name === "now-playing-changed") root.refreshNowPlaying()
       else if (name === "host" && data && typeof data.bluetooth_restart_command === "string")
         root.bluetoothRestartCommand = data.bluetooth_restart_command
     }
@@ -582,6 +612,14 @@ ShellRoot {
             color: theme.muted
             font.pixelSize: theme.captionSize
           }
+        }
+
+        QuickshellNowPlaying {
+          objectName: "nowPlaying"
+          ferryTheme: theme
+          Layout.fillWidth: true
+          view: root.nowPlaying
+          onCommandRequested: command => backendBridge.request("media_command", {command: command})
         }
 
         FerryLabel {
