@@ -30,6 +30,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `backend_operations.py` | Toolkit- and transport-neutral application operations: validation, thread routing, and policy. |
 | `dbus_service.py` | Session D-Bus adapter (`Messages1`/`Events1`/`Presence1`/`CallHistory1`) that maps operations to wire types; claims the bus name. |
 | `dbus_security.py` | Caller UID validation and per-connection/daemon-wide rate limits. |
+| `dbus_call.py` | Asynchronous dbus-python calls with an explicit input signature (`call_async`), plus typed `ay`/`a{sv}` builders. |
 | `protocol.py` | Stable D-Bus identifiers and the API-generation compatibility check. |
 | `event_dispatcher.py` | Builds messages from MAP/ANCS events and fans them out to persistence, desktop, and D-Bus sinks. |
 | `events.py` | Normalized MAP event dataclasses (`SmsEvent`) and address/timestamp normalization. |
@@ -253,6 +254,36 @@ contract.
   (`call_history`, `call_history_repository`, `call_history_sync`) and exists
   in the daemon only while the user has opted in (`CallHistory1.SetCallHistory`,
   seeded from `BLUEFERRY_CALL_HISTORY_ENABLED`).
+
+## D-Bus calls inside the daemon
+
+Everything in the daemon shares one GLib main loop, so a call that waits for
+a reply stalls BlueZ signals, timers, and every client meanwhile.
+
+- Calls from loop code are asynchronous: `reply_handler`/`error_handler` on
+  dbus-python proxies. `dbus_call.call_async` does that and always passes the
+  input signature. Never pass a bare `{}`/`[]` to a proxy fetched with
+  `introspect=False`: dbus-python cannot type it and raises `ValueError`
+  before sending.
+- Blocking work (`time.sleep`, `subprocess.run`, OBEX transfers, slow SQLite
+  opens) runs on the OBEX worker or in a helper process, never on the loop.
+- `tools/lint_mainloop.py` enforces this for modules the daemon imports at
+  import time (run in CI and by `tests/test_lint_mainloop.py`). Deliberate,
+  safe exceptions (worker-thread, CLI and helper-process code) go in its
+  `ALLOWLIST` with a reason. Existing calls that do block the loop are
+  tracked in `KNOWN_DEBT` and leave it only with their fix; never add to it.
+- The autouse `sync_dbus_guard` in `tests/conftest.py` catches blocking
+  calls the AST cannot see. Those that predate it are in the lint's
+  `RUNTIME_KNOWN_DEBT`.
+
+Suggested order for paying off `KNOWN_DEBT`, one module per change:
+`sinks/libnotify.py` (`Notify`, with the popup id recorded in the reply
+handler), `bearer_supervisor.py` and `bluez_setup.current_cod`, then
+`ancs/client.py` (its subscribe path needs an asynchronous state machine like
+AMS), and last `dbus_security.CallerGuard` and `dbus_service`, where caller
+credentials become an asynchronous lookup before dispatch. Signal watches
+(`add_signal_receiver`) still make one blocking `AddMatch` each in
+dbus-python; the guard tolerates that.
 
 ## D-Bus API and compatibility
 
@@ -715,5 +746,7 @@ only on findings that stay reproducible in `PROTOCOL.md`.
 - Keep toolkit root files focused on navigation and composition. Put cohesive
   state derivation and presentation in loadable QML components with behavioral
   tests rather than growing root-level functions.
+- Never block the daemon's main loop; see
+  [D-Bus calls inside the daemon](#d-bus-calls-inside-the-daemon).
 - Prefer narrowly tested helpers over broad exception handling. Best-effort
   cleanup may catch broadly, but command paths must return actionable errors.
