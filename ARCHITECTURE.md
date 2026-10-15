@@ -83,6 +83,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `call_history_settings.py` | The saved call-history opt-in (`settings.json`, seeded from `local.env`). |
 | `vcard.py` | Linear, resource-bounded vCard block extraction; the photo-aware variant splits PHOTO out under its own budget. |
 | `contact_photos.py` | Opt-in contact photos: bounded base64 PHOTO decoding and volatile owner-only copies for notification icons. |
+| `contact_photo_settings.py` | The saved contact-photo opt-in (`settings.json`, seeded by `BLUEFERRY_CONTACT_PHOTOS`); the daemon passes it as a callable to the contact cache, sync and storage preparation. |
 | `ancs/client.py` | ANCS GATT client: subscribes to characteristics, requests attributes, emits `AncsEvent`s, and sends opt-in `PerformNotificationAction` writes. |
 | `ancs/parsers.py` | Pure ANCS wire-format parsers and command builders. |
 | `ancs/constants.py` | ANCS spec constants. |
@@ -118,6 +119,7 @@ All paths are relative to `src/blueferry/` unless noted.
 | `otp_context.py` | Bounded, transient MAP/ANCS context for live group correlation and read-state changes; works without history storage. |
 | `otp_clipboard.py` | Chooses wl-copy/xclip/xsel and owns one foreground clipboard helper; first copy waits for the worker capability probe; reaps through a GLib child watch. Cleanup only stops its own source, preserving selections owned by other programs. |
 | `sinks/libnotify.py` | Desktop notifications via `org.freedesktop.Notifications`, including open and dismiss actions, optional incoming-call Answer/Decline, opt-in iPhone action buttons, and the optional phone low-battery warning. |
+| `otp_settings.py` | The saved one-time code opt-in (`otp_autocopy` in `settings.json`, seeded by `BLUEFERRY_OTP_AUTOCOPY`). |
 
 ### Storage and privacy
 
@@ -165,18 +167,19 @@ All paths are relative to `src/blueferry/` unless noted.
 | --- | --- |
 | `cli.py`, `__main__.py` | Typer CLI (`run`, `doctor`, sync, setup, and hidden `pairing-*` JSON helpers). |
 | `cli_messages.py` | CLI message listing, recipient selection, and send. |
-| `cli_contacts.py` | `contacts-photo` export of one cached contact photo. |
+| `cli_contacts.py` | `contact-photos enable`/`disable`/`status` and `contacts-photo` export of one cached contact photo. |
 | `cli_call_history.py` | Opt-in `call-history` listing, enable, and disable. |
 | `cli_common.py` | Small CLI presentation helpers. |
 | `cli_proximity.py` | `proximity-lock` status, dry run, enable, and disable. |
-| `cli_otp.py` | `otp-status` and `otp-check` for one-time code auto-copy. |
 | `cli_notifications.py` | `notifications open-map` rule editing. |
 | `cli_media.py` | `blueferry media` now-playing status, commands, and `enable`/`disable`. |
 | `cli_notification_actions.py` | `notification-actions` status, enable, and disable for the opt-in iPhone action buttons. |
 | `cli_calls.py` | Optional `blueferry calls` commands over `Calls1` and `blueferry phone-status` (battery, signal, network from `GetStatus`). |
+| `cli_otp.py` | `blueferry otp status`, `enable`, `disable` and `check` for one-time code auto-copy (`otp-status` and `otp-check` stay as aliases). |
 | `tui.py` | Textual terminal client. |
 | `tui_launcher.py` | Launches the TUI with the package-private Textual bundle when present. |
 | `tui_calls.py` | Optional Textual calls panel. |
+| `tui_options.py` | Textual "Options" screen (`o`): one checkbox per opt-in the daemon reports. |
 | `tui_notification_rules.py` | Textual editor for notification click rules. |
 | `ui/app.py` | GTK4/libadwaita application entry point. |
 | `ui/window.py` | Main GTK window. |
@@ -203,6 +206,8 @@ All paths are relative to `src/blueferry/` unless noted.
 | `qt/qml/GroupConfirmationDialog.qml` | Group recipient confirmation before sending. |
 | `qt/qml/NewMessageDialog.qml` | New message composition. |
 | `qt/qml/CallsDialog.qml` | Optional phone-calls dialog (list, dial with confirmation, answer, hang up). |
+| `qt/qml/ContactPhotoSettings.qml` | Contact-photo checkbox; loaded only for daemons that report `contact_photos`. |
+| `qt/qml/OtpAutocopySettings.qml` | One-time code auto-copy checkbox; loaded only for daemons that report `otp_autocopy`. |
 | `qt/qml/PhoneCallsSettings.qml` | Phone-calls opt-in checkbox; loaded only for daemons that report `calls_enabled`. |
 | `qt/qml/PhoneStatusIndicator.qml` | Optional iPhone battery/signal indicator (loaded only when values are known; plain-text tooltip). |
 | `qt/qml/ExpandingMessageComposer.qml` | Growing message editor. |
@@ -592,11 +597,14 @@ A change to these rules has to be made in both places.
   delivery continues. Only an explicit client action may create or unlock the
   key. History writes are transactional, and a monotonic revision invalidates
   the projection.
-- **Contact photos** are opt-in (`BLUEFERRY_CONTACT_PHOTOS`). The daemon keeps
+- **Contact photos** are opt-in (`contact_photos` in `settings.json`, set
+  through `Messages1.SetContactPhotos` and seeded by
+  `BLUEFERRY_CONTACT_PHOTOS`; switching applies without a restart). The daemon keeps
   inline JPEG/PNG bytes within size limits. It checks the declared canvas by
   reading the header and never decodes pixels. It stores the raw bytes
   AES-GCM-sealed in a BLOB next to the contact records, in the same
-  transaction, and erases them at startup when the option is off. The photo
+  transaction, and erases them when the option is turned off (on the OBEX
+  worker, after any queued pull) or at startup when it is off. The photo
   table is created only when a sync stores a photo, and the off-path check is
   read-only, so a profile that never opted in keeps the upstream schema.
   A trigger created with the table deletes all photos whenever
