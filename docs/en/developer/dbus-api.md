@@ -90,6 +90,7 @@ package to restart an outdated backend after upgrades.
 | `GetContactsOnlyNotifications` / `SetContactsOnlyNotifications` | `b enabled` |
 | `GetAncsNotificationActions` / `SetAncsNotificationActions` | `b enabled` (saved opt-in for iPhone action buttons) |
 | `SetPhoneBatteryWarning` | `b enabled` → `b selected`; state is `phone_battery_warning` in `GetStatus` |
+| `SetMirrorNotificationRemovals` | `b enabled` → `b selected` (saved opt-in: a removal on the iPhone closes the popup); state is `mirror_iphone_removals` in `GetStatus` |
 | `GetStoragePolicy` / `SetStoragePolicy` | `s policy`: `encrypted`, `plaintext`, or `none`; `Set` returns `s status_json` |
 | `UnlockStorage` | → `s status_json` |
 | `GetNotificationOpenMap` | → `s rules_json` (list of `bundle_id`, `target`, `kind`) |
