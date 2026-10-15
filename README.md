@@ -445,6 +445,19 @@ physical iPhone.
 
 Restart the user service after editing `local.env` settings.
 
+### Sync notifications with iPhone (opt-in)
+
+With **All iPhone Notifications** selected, an iPhone app popup normally
+stays until it times out, even after you cleared the notification on the
+phone. Turn on **Sync notifications with iPhone** in the Qt client's iPhone
+settings, or run `blueferry notifications sync enable`, and a notification
+removed or dismissed on the iPhone also closes its desktop popup. It only
+closes popups and never sends anything to the phone. The choice is saved as
+`mirror_iphone_removals` in `settings.json` and reported under that key in
+`GetStatus`. iOS reuses notification numbers per Bluetooth session, so
+popups from before a reconnect just time out. Only the notification number
+and popup id are kept, in memory.
+
 ### Contact photos (optional)
 
 Contact photos are off by default. To show the iPhone's contact pictures as
@@ -894,6 +907,7 @@ blueferry media status
 blueferry history-clear
 blueferry otp-status
 blueferry notifications open-map list
+blueferry notifications sync status
 blueferry doctor
 ```
 
