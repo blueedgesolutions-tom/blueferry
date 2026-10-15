@@ -81,3 +81,42 @@ def test_finalizers_and_bus_name_release_are_not_attributed(bus, sync_dbus_guard
     exec(compile("def claim(bus, run):\n    run(bus)\n", _DAEMON_FILE, "exec"), namespace)
     namespace["claim"](bus, claim_and_drop)
     assert sync_dbus_guard == []
+
+
+_HELPER_SOURCE = """
+import dbus.service
+
+
+def owner_of(bus, name):
+    return bus.get_name_owner(name)
+
+
+def claim(bus, name):
+    return dbus.service.BusName(name, bus)
+
+
+def proxy_for(bus, name):
+    return bus.get_object(name, "/org/freedesktop/DBus", introspect=False)
+
+
+def release(bus, name):
+    return bus.release_name(name)
+"""
+
+
+def test_bus_helpers_called_from_daemon_code_are_reported(bus, sync_dbus_guard) -> None:
+    namespace: dict = {}
+    exec(compile(_HELPER_SOURCE, _DAEMON_FILE, "exec"), namespace)
+    name = "io.weirdware.BlueFerry.GuardHelperTest"
+    bus_name = namespace["claim"](bus, name)  # RequestName via BusName: implicit
+    assert namespace["proxy_for"](bus, name) is not None  # GetNameOwner via get_object: implicit
+    assert sync_dbus_guard == []
+
+    assert namespace["owner_of"](bus, name)
+    namespace["release"](bus, name)
+    assert sync_dbus_guard == [
+        "blueferry.daemon:owner_of -> GetNameOwner",
+        "blueferry.daemon:release -> ReleaseName",
+    ]
+    sync_dbus_guard.clear()  # this test made the calls on purpose
+    del bus_name

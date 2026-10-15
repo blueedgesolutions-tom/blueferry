@@ -74,7 +74,9 @@ style dependencies fail this check even when CLI/TUI startup still succeeds.
   the `ALLOWLIST`, `KNOWN_DEBT` and `RUNTIME_KNOWN_DEBT` of
   `tools/lint_mainloop.py` apply, and dbus-python's own bus-daemon
   bookkeeping (`AddMatch`, `RemoveMatch`, `GetNameOwner`, `RequestName`,
-  `ReleaseName`) and finalizers are exempt. Fix a report with
+  `ReleaseName`, made from inside dbus-python such as `get_object` or
+  `BusName`) and finalizers are exempt; daemon code calling a bus helper like
+  `bus.get_name_owner()` directly is reported. Fix a report with
   `reply_handler`/`error_handler` or `dbus_call.call_async`.
 - `tests/test_lint_mainloop.py` runs `tools/lint_mainloop.py` over the source
   tree: new blocking calls in daemon modules and stale exemptions fail it.

@@ -386,11 +386,34 @@ def sync_dbus_caller(frame) -> str | None:
 # get_object resolves a well-known name, RequestName/ReleaseName for
 # dbus.service.BusName (the release also runs from its finalizer). Those
 # round trips are local and every proxy and signal watch in the daemon
-# depends on them. The same methods called directly from daemon code are
-# still reported.
+# depends on them. dbus-python routes them through public helpers
+# (bus.get_name_owner(), bus.release_name(), bus.add_match_string(), ...),
+# so the exemption looks one frame above the helper: it applies only when
+# that caller is dbus-python too. Daemon code calling a helper such as
+# ``bus.get_name_owner(name)`` directly is still reported.
 _IMPLICIT_BUS_DAEMON_CALLS = frozenset({
     "AddMatch", "RemoveMatch", "GetNameOwner", "RequestName", "ReleaseName",
 })
+
+
+def _in_dbus_python(frame) -> bool:
+    return frame is not None and os.path.abspath(frame.f_code.co_filename).startswith(_DBUS_DIR)
+
+
+def _implicit_bus_daemon_call(bus_name: str, method: str, frame) -> bool:
+    """Whether dbus-python made this bus daemon call on its own behalf.
+
+    ``frame`` is the direct caller of ``call_blocking``: the dbus-python
+    helper (``get_name_owner``, ``release_name``, ``add_match_string``, ...).
+    The call is implicit only if the helper's own caller is dbus-python as
+    well (``get_object``, ``BusName``, ``add_signal_receiver``).
+    """
+    return (
+        bus_name == "org.freedesktop.DBus"
+        and method in _IMPLICIT_BUS_DAEMON_CALLS
+        and _in_dbus_python(frame)
+        and _in_dbus_python(frame.f_back)
+    )
 
 
 def _record_sync_dbus(original):
@@ -398,11 +421,7 @@ def _record_sync_dbus(original):
     def call_blocking(self, bus_name, object_path, dbus_interface, method, *args, **kwargs):
         record = _sync_dbus_calls
         frame = sys._getframe(1)
-        if record is not None and not (
-            bus_name == "org.freedesktop.DBus"
-            and method in _IMPLICIT_BUS_DAEMON_CALLS
-            and os.path.abspath(frame.f_code.co_filename).startswith(_DBUS_DIR)
-        ):
+        if record is not None and not _implicit_bus_daemon_call(bus_name, method, frame):
             caller = sync_dbus_caller(frame)
             if caller is not None:
                 record.append(f"{caller} -> {method}")
