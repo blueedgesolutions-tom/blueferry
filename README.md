@@ -243,6 +243,19 @@ Press `?` for the keyboard map or `Ctrl+P` for the command palette. The TUI has
 conversation search, a multiline composer, mouse support, themes, and a layout
 that adapts to narrow terminals.
 
+## System tray item
+
+`blueferry-tray` ships with the Qt client: a small separate process for the
+system tray (a StatusNotifierItem under KDE Plasma). Its phone icon carries
+the number of unread messages; the tooltip shows the connection, battery,
+signal, and network. Left-click opens the Qt client (or raises it). The tray
+only talks to a running backend and never starts or restarts the daemon.
+While it runs, `blueferry-qt` leaves out its own tray icon.
+
+The tray does not start at login by default. Check **Start at login** in its
+menu, or run `blueferry-tray --autostart on`, to write
+`~/.config/autostart/io.weirdware.BlueFerry.Tray.desktop`.
+
 ## Omarchy Quattro
 
 The native bar panel lives in
