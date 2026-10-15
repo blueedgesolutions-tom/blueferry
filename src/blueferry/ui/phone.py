@@ -44,6 +44,9 @@ class PhonePage(Gtk.Box):
         self._calls_error = ""
         self._calls_received = False
         self._watching = False
+        self._epoch = 0
+        self._pending: set[str] = set()
+        self._again: set[str] = set()
 
         page = Adw.PreferencesPage()
         page.set_vexpand(True)
@@ -86,28 +89,63 @@ class PhonePage(Gtk.Box):
 
     def set_watching(self, watching: bool) -> None:
         """Fetch only while the dialog is open, like the Qt Recent Calls page."""
+        if self._watching != watching:
+            self._epoch += 1
         self._watching = watching
         if watching:
             self._refresh_status()
+        else:
+            self._again.clear()
+            self._status_loaded(BackendStatus())
+
+    def _load(self, kind, request, loaded, failed) -> None:
+        if kind in self._pending:
+            self._again.add(kind)
+            return
+        self._pending.add(kind)
+        epoch = self._epoch
+
+        def completed(callback, value):
+            self._pending.discard(kind)
+            again = kind in self._again
+            self._again.discard(kind)
+            if self._watching and epoch == self._epoch:
+                callback(value)
+            if again and self._watching:
+                {"status": self._refresh_status, "media": self._refresh_media,
+                 "calls": self._refresh_calls}[kind]()
+
+        request(lambda value: completed(loaded, value), lambda error: completed(failed, error))
 
     def _refresh_status(self) -> None:
         if self._watching:
-            self._client.get_status_async(self._status_loaded)
+            self._load("status", self._client.get_status_async, self._status_loaded,
+                       lambda _message: self._status_loaded(BackendStatus()))
 
     def _refresh_media(self) -> None:
         if not self._watching or not overview.media_control_enabled(self._status):
             return
-        self._client.now_playing_async(
+        self._load(
+            "media", self._client.now_playing_async,
             self._media_loaded, lambda _message: self._media_loaded({}),
         )
 
     def _refresh_calls(self) -> None:
         if not self._watching or not overview.call_history_enabled(self._status):
             return
-        self._client.call_history_async(MAX_CALLS, self._calls_loaded, self._calls_failed)
+        self._load(
+            "calls",
+            lambda loaded, failed: self._client.call_history_async(MAX_CALLS, loaded, failed),
+            self._calls_loaded, self._calls_failed,
+        )
 
     def _status_loaded(self, status: BackendStatus) -> None:
-        self._status = status.to_dict()
+        values = status.to_dict()
+        if any(self._status.get(key) != values.get(key) for key in (
+            "daemon", "media_control_enabled", "call_history_enabled",
+        )):
+            self._epoch += 1
+        self._status = values
         if not overview.media_control_enabled(self._status):
             self._now_playing = {}
         if not overview.call_history_enabled(self._status):

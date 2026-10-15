@@ -207,3 +207,66 @@ def test_recent_calls_need_the_opt_in() -> None:
             assert backend.history_calls == []
 
     _run_headless(scenario())
+
+
+def test_late_media_reply_stays_hidden_after_opt_out(monkeypatch) -> None:
+    backend = _PhoneBackend(media_control_enabled=True)
+
+    async def scenario() -> None:
+        app = BlueFerryApp(TuiState(backend), monitor_factory=lambda: None)
+        async with app.run_test(size=(120, 36)) as pilot:
+            await _until(pilot, lambda: app.now_playing.visible)
+            pending = []
+            monkeypatch.setattr(app, "_fetch_now_playing", pending.append)
+            app._load_now_playing()
+            generation = pending[0]
+            for _ in range(1000):
+                app._load_now_playing()
+            assert len(pending) == 1
+            backend.extra["media_control_enabled"] = False
+            await pilot.press("r")
+            await _until(pilot, lambda: not app.query_one("#now-playing").display)
+            app._media_loaded(overview.now_playing(backend.snapshot), generation)
+            assert not app.now_playing.visible
+            assert not app.query_one("#now-playing").display
+            assert len(pending) == 1
+
+    _run_headless(scenario())
+
+
+def test_media_burst_coalesces_and_ignores_the_superseded_reply(monkeypatch) -> None:
+    backend = _PhoneBackend(media_control_enabled=True)
+
+    async def scenario() -> None:
+        app = BlueFerryApp(TuiState(backend), monitor_factory=lambda: None)
+        async with app.run_test(size=(120, 36)) as pilot:
+            await _until(pilot, lambda: app.now_playing.visible)
+            pending = []
+            monkeypatch.setattr(app, "_fetch_now_playing", pending.append)
+            original = app.now_playing
+            for _ in range(1000):
+                app._load_now_playing()
+            assert len(pending) == 1
+            app._media_loaded(overview.now_playing(None), pending[0])
+            assert app.now_playing == original
+            assert len(pending) == 2
+            app._media_loaded(overview.now_playing(None), pending[1])
+            assert not app.now_playing.visible
+
+    _run_headless(scenario())
+
+
+def test_disabling_call_history_closes_the_open_history_screen() -> None:
+    backend = _PhoneBackend(call_history_enabled=True)
+
+    async def scenario() -> None:
+        app = BlueFerryApp(TuiState(backend), monitor_factory=lambda: None)
+        async with app.run_test(size=(120, 36)) as pilot:
+            await _until(pilot, lambda: app.state.status.extra.get("call_history_enabled"))
+            await pilot.press("h")
+            assert isinstance(app.screen, RecentCallsScreen)
+            backend.extra["call_history_enabled"] = False
+            app._load_data()
+            await _until(pilot, lambda: not isinstance(app.screen, RecentCallsScreen))
+
+    _run_headless(scenario())

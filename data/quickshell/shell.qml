@@ -91,6 +91,11 @@ ShellRoot {
     }
   }
 
+  function applyNowPlaying(result) {
+    root.nowPlaying = root.backendStatus.media_control_enabled === true
+      && typeof result === "object" && result !== null ? result : ({})
+  }
+
   function searchContacts(query) {
     contactResults = []
     const selected = query.trim()
@@ -193,6 +198,7 @@ ShellRoot {
 
   function markStatusUnavailable(message) {
     backendStatus = ({})
+    backendBridge.cancelLatest("now_playing")
     nowPlaying = ({})
     statusErrorText = message
   }
@@ -314,7 +320,7 @@ ShellRoot {
       } else if (method === "set_thread_starred") {
         // HistoryChanged reloads the thread list.
       } else if (method === "now_playing") {
-        root.nowPlaying = typeof result === "object" && result !== null ? result : ({})
+        root.applyNowPlaying(result)
       } else if (method === "media_command") {
         // NowPlayingChanged refreshes the strip.
       } else if (method === "delete_threads") {

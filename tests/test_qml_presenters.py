@@ -3687,3 +3687,32 @@ def test_quickshell_fetches_now_playing_only_with_the_opt_in(qml_engine) -> None
     })()'''
     assert _evaluate(qml_engine, script) == '["cancel:now_playing","request:now_playing"]'
     assert 'name === "now-playing-changed") root.refreshNowPlaying()' in source
+
+
+def test_quickshell_discards_late_media_after_status_loss(qml_engine) -> None:
+    source = (ROOT / "data/quickshell/shell.qml").read_text()
+    functions = _qml_functions(source, ("markStatusUnavailable", "applyNowPlaying"))
+    script = '''(function() {
+        var calls = [];
+        var backendBridge = {cancelLatest: function(method) { calls.push(method); }};
+        var backendStatus = {media_control_enabled: true};
+        var nowPlaying = {visible: true};
+        var statusErrorText = "";
+        var root = {};
+        Object.defineProperty(root, "backendStatus", {get: function() {return backendStatus;}});
+        Object.defineProperty(root, "nowPlaying", {
+            get: function() {return nowPlaying;}, set: function(value) {nowPlaying = value;}
+        });
+    ''' + functions + '''
+        markStatusUnavailable("gone");
+        applyNowPlaying({visible: true, title: "old"});
+        if (nowPlaying.visible) throw new Error("late media restored after status loss");
+        backendStatus = {media_control_enabled: false};
+        applyNowPlaying({visible: true});
+        if (nowPlaying.visible) throw new Error("late media restored after opt-out");
+        backendStatus = {media_control_enabled: true};
+        applyNowPlaying({visible: true});
+        if (!nowPlaying.visible) throw new Error("fresh media was hidden");
+        return JSON.stringify(calls);
+    })()'''
+    assert _evaluate(qml_engine, script) == '["now_playing"]'

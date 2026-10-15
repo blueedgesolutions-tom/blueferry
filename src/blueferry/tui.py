@@ -654,6 +654,9 @@ class BlueFerryApp(App[None]):
         self._announced_calls: set[str] = set()
         self.now_playing = phone_overview.now_playing(None)
         self._now_playing_key: tuple[bool, bool] | None = None
+        self._media_generation = 0
+        self._media_loading = False
+        self._media_again = False
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="masthead"):
@@ -985,6 +988,10 @@ class BlueFerryApp(App[None]):
         if media_key != self._now_playing_key:
             self._now_playing_key = media_key
             self._load_now_playing()
+        if isinstance(self.screen, RecentCallsScreen) and (
+            not status.daemon or not phone_overview.call_history_enabled(status.to_dict())
+        ):
+            self.screen.dismiss(None)
 
     def _set_pill(self, selector: str, label: str, active: bool) -> None:
         pill = self.query_one(selector, Static)
@@ -1183,16 +1190,35 @@ class BlueFerryApp(App[None]):
             self.state.client, policy_all=status.notification_policy == "all",
         ))
 
-    @work(thread=True, exclusive=True, group="now-playing", exit_on_error=False)
     def _load_now_playing(self) -> None:
-        # Like the Qt client: no Media1 call unless the user opted in.
+        self._media_generation += 1
+        status = self.state.status
+        if not status.daemon or not phone_overview.media_control_enabled(status.to_dict()):
+            self._media_again = False
+            self._show_now_playing(phone_overview.now_playing(None))
+            return
+        if self._media_loading:
+            self._media_again = True
+            return
+        self._media_loading = True
+        self._fetch_now_playing(self._media_generation)
+
+    @work(thread=True, group="now-playing", exit_on_error=False)
+    def _fetch_now_playing(self, generation: int) -> None:
         snapshot: dict = {}
-        if phone_overview.media_control_enabled(self.state.status.to_dict()):
-            try:
-                snapshot = self.state.client.now_playing()
-            except BackendError:
-                snapshot = {}
-        self.call_from_thread(self._show_now_playing, phone_overview.now_playing(snapshot))
+        try:
+            snapshot = self.state.client.now_playing()
+        except BackendError:
+            pass
+        self.call_from_thread(self._media_loaded, phone_overview.now_playing(snapshot), generation)
+
+    def _media_loaded(self, view: phone_overview.NowPlaying, generation: int) -> None:
+        self._media_loading = False
+        if generation == self._media_generation:
+            self._show_now_playing(view)
+        if self._media_again:
+            self._media_again = False
+            self._load_now_playing()
 
     def _show_now_playing(self, view: phone_overview.NowPlaying) -> None:
         self.now_playing = view
