@@ -1416,3 +1416,32 @@ def test_click_rule_and_iphone_actions_share_one_popup(monkeypatch) -> None:
     server.signals["ActionInvoked"](nid, "ancs-negative")
     assert invoked == [(42, False, 5)]
     assert opened == [OpenTarget("url", "https://calls.example.com/")]
+
+
+def test_mirrored_removal_closes_any_ancs_popup_of_the_session(monkeypatch) -> None:
+    # Without action buttons, so only the new popup tracker knows the UID.
+    sink, server = _action_sink(monkeypatch, enabled=False, callback=None)
+    sink.handle_ancs(_call_event())
+    nid = _notify_calls(server)[0][1]
+
+    sink.close_removed_ancs_popup(999)
+    assert ("close", nid) not in server.calls
+    sink.close_removed_ancs_popup(42)
+    assert ("close", nid) in server.calls
+
+    # After a session reset the UID may belong to another notification.
+    sink.handle_ancs(_call_event())
+    sink.forget_ancs_popups()
+    server.calls.clear()
+    sink.close_removed_ancs_popup(42)
+    assert server.calls == []
+
+
+def test_ancs_popup_tracker_is_bounded_and_released_on_close(monkeypatch) -> None:
+    sink, server = _action_sink(monkeypatch, enabled=False, callback=None)
+    for uid in range(libnotify_mod.MAX_ANCS_ACTION_POPUPS + 5):
+        sink.handle_ancs(_call_event(notification_id=uid))
+    assert len(sink._ancs_popups) == libnotify_mod.MAX_ANCS_ACTION_POPUPS
+    newest = _notify_calls(server)[-1][1]
+    server.signals["NotificationClosed"](newest, 2)
+    assert newest not in sink._ancs_popups
