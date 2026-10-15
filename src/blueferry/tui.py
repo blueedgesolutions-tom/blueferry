@@ -43,6 +43,7 @@ from blueferry.text_safety import terminal_text
 from blueferry.time_display import format_message_timestamp
 from blueferry.tui_calls import CallsScreen
 from blueferry.tui_notification_rules import REVISION_KEY, NotificationRulesScreen
+from blueferry.tui_options import OptionsScreen
 from blueferry.tui_phone import RecentCallsScreen, now_playing_text
 
 _REFRESH_SECONDS = 15.0
@@ -592,6 +593,7 @@ class HelpScreen(ModalScreen[None]):
             "[bold #7dd3fc]Star conversation[/]  s\n"
             "[bold #7dd3fc]Delete conversation[/]  Delete\n"
             f"{calls_line}"
+            "[bold #7dd3fc]Options[/]  o\n"
             "[bold #7dd3fc]Notification click rules[/]  l\n"
             "[bold #7dd3fc]Commands[/]  Ctrl+P\n"
             "[bold #7dd3fc]Refresh[/]  r\n"
@@ -627,8 +629,7 @@ class BlueFerryApp(App[None]):
         Binding("s", "toggle_star", "Star"),
         Binding("delete", "delete_thread", "Delete"),
         Binding("c", "calls", "Calls", show=False),
-        # "o" belongs to the Options screen of the one-time code and
-        # contact-photo PRs; once one of them lands, the rules move there.
+        Binding("o", "options", "Options"),
         Binding("l", "click_rules", "Click rules", show=False),
         Binding("h", "recent_calls", "Recent calls", show=False),
         Binding("p", "media('toggle')", "Play/Pause", show=False),
@@ -1141,6 +1142,12 @@ class BlueFerryApp(App[None]):
             media_control=phone_overview.media_control_enabled(values),
             call_history=phone_overview.call_history_enabled(values),
         ))
+
+    def action_options(self) -> None:
+        focused = self.focused
+        if isinstance(focused, Input | TextArea) or isinstance(self.screen, OptionsScreen):
+            return
+        self.push_screen(OptionsScreen(self.state.client))
 
     def action_new_message(self) -> None:
         self.push_screen(NewMessageScreen(), self._new_message_ready)

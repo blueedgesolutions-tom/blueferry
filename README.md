@@ -243,6 +243,19 @@ Press `?` for the keyboard map or `Ctrl+P` for the command palette. The TUI has
 conversation search, a multiline composer, mouse support, themes, and a layout
 that adapts to narrow terminals.
 
+## System tray item
+
+`blueferry-tray` ships with the Qt client: a small separate process for the
+system tray (a StatusNotifierItem under KDE Plasma). Its phone icon carries
+the number of unread messages; the tooltip shows the connection, battery,
+signal, and network. Left-click opens the Qt client (or raises it). The tray
+only talks to a running backend and never starts or restarts the daemon.
+While it runs, `blueferry-qt` leaves out its own tray icon.
+
+The tray does not start at login by default. Check **Start at login** in its
+menu, or run `blueferry-tray --autostart on`, to write
+`~/.config/autostart/io.weirdware.BlueFerry.Tray.desktop`.
+
 ## Omarchy Quattro
 
 The native bar panel lives in
@@ -335,10 +348,14 @@ journalctl --user -u blueferry -f | grep "ANCS app observed"
 
 BlueFerry can copy verification codes (2FA/OTP) from newly received SMS and
 iMessages to the clipboard. This is off by default because it changes the
-clipboard without you doing anything:
+clipboard without you doing anything. Turn it on with the "Copy one-time
+codes to the clipboard" checkbox in the Qt, GTK or Quickshell iPhone
+settings, the terminal client's Options (`o`), or `blueferry otp enable`.
+The choice is saved in `settings.json` and applies at once;
+`BLUEFERRY_OTP_AUTOCOPY=true` in `local.env` still works as the starting
+value until a client changes it. The clear timer stays in `local.env`:
 
 ```bash
-BLUEFERRY_OTP_AUTOCOPY=true
 # Optional: clear the clipboard after this many seconds (0 = keep, max 600)
 BLUEFERRY_OTP_CLEAR_SECONDS=60
 ```
@@ -358,7 +375,7 @@ like "verify" or "one-time" alone never pick a number, promotions and
 bookings need a specific code word, and amounts, dates, times, phone numbers,
 and order or tracking numbers are skipped. `G-123456` and `123-456` are copied
 as `123456`. Check what a message would copy with
-`echo 'Your code is 123456' | blueferry otp-check`.
+`echo 'Your code is 123456' | blueferry otp check`.
 
 The message popup gets one extra line saying the code was copied; when there
 is no message popup (for example with notifications limited to contacts), a
@@ -370,7 +387,7 @@ logged, stored, or published on BlueFerry's D-Bus API, so there is no command
 to show it again.
 
 The backend copies with `wl-copy` from wl-clipboard on Wayland, or `xclip` or
-`xsel` on X11; `blueferry otp-status` shows which one it finds. With
+`xsel` on X11; `blueferry otp status` shows which one it finds. With
 wl-clipboard 2.3 or newer the code is marked as sensitive; clipboard managers
 that honor the hint keep it out of their history. The first copy waits for the
 capability probe. Older versions and the X11 tools cannot set this hint.
@@ -449,20 +466,20 @@ Restart the user service after editing `local.env` settings.
 
 Contact photos are off by default. To show the iPhone's contact pictures as
 avatars in the GTK, Qt and Quickshell conversation lists and headers and as
-desktop notification icons, add
-this to `local.env`, restart the user service, and sync contacts:
-
-```bash
-BLUEFERRY_CONTACT_PHOTOS=true
-```
+desktop notification icons, tick "Show contact photos from the iPhone" in
+the Qt, GTK or Quickshell iPhone settings or the terminal client's Options
+(`o`), or run `blueferry contact-photos enable`. The choice is saved in
+`settings.json` and applies at once, starting a contact sync that brings the
+photos; `BLUEFERRY_CONTACT_PHOTOS=true` in `local.env` still works as the
+starting value until a client changes it.
 
 The iPhone already sends photos in the normal contact download, so this
 doesn't add a second Bluetooth transfer. BlueFerry just stops throwing them
 away. Photos are stored in the contact cache with the same encryption, storage
-mode, and replacement as the contacts, and are deleted the next time the
-backend starts with the option off. Only JPEG and PNG photos up to 256 KiB and
-2048×2048 pixels are kept, at most 16 MiB per sync (one iPhone on iOS 27
-sent thumbnails of 2 to 19 KiB). A photo shows only when
+mode, and replacement as the contacts, and are erased when the option is
+turned off (or when the backend starts with it off). Only JPEG and PNG photos
+up to 256 KiB and 2048×2048 pixels are kept, at most 16 MiB per sync (one iPhone
+on iOS 27 sent thumbnails of 2 to 19 KiB). A photo shows only when
 its address belongs to exactly one contact. One log line per sync (`grep
 "with photos"`) counts photo sizes (including how far over the limit dropped
 photos were, and the largest size) and why photos were dropped, with no
@@ -474,8 +491,9 @@ stays readable for popups already shown, up to 64 files), and deletes it when
 the storage mode changes or the backend stops. Plasma is expected to show that image. Neither Plasma nor any
 other notification server has been tested with it yet, so a server that
 ignores `image-path` just shows the usual icon. Before going back to a
-BlueFerry release without this option, turn it off and start the backend once.
-That start erases the stored photos right away; otherwise the older release
+BlueFerry release without this option, turn it off and wait until
+`blueferry contact-photos status` reports cleanup complete. Cleanup waits for
+active contact downloads and retries storage or file-deletion failures; otherwise the older release
 deletes them with the contacts at its next contact sync. `blueferry contacts-photo NAME -o FILE`
 exports one cached photo. Group conversations keep their group icons, and the
 terminal client does not show photos.
@@ -893,11 +911,12 @@ blueferry sms-send '+15551234567' 'on my way'
 blueferry sms-send person@icloud.com 'hello from Linux'
 blueferry sms-send Alice 'running late'
 blueferry contacts-sync
-blueferry contacts-photo Alice --output alice.jpg   # needs BLUEFERRY_CONTACT_PHOTOS
+blueferry contact-photos enable                     # opt in; disable / status
+blueferry contacts-photo Alice --output alice.jpg   # needs contact photos on
 blueferry call-history --missed   # after `blueferry call-history enable`
 blueferry media status
 blueferry history-clear
-blueferry otp-status
+blueferry otp status
 blueferry notifications open-map list
 blueferry doctor
 ```

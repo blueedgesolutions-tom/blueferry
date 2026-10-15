@@ -549,3 +549,37 @@ def test_bridge_sends_only_the_transport_media_commands() -> None:
         with pytest.raises(ValueError, match=message):
             bridge.dispatch("media_command", args)
     assert sent == ["next"]
+
+
+def test_bridge_saves_the_contact_photo_opt_in() -> None:
+    client = FakeClient()
+    client.set_contact_photos = lambda enabled: (  # type: ignore[attr-defined]
+        client.calls.append(("set_contact_photos", enabled)) or {"contact_photos": enabled}
+    )
+    bridge = QuickshellBridge(client)  # type: ignore[arg-type]
+
+    assert bridge.dispatch("set_contact_photos", {"enabled": True}) == {"contact_photos": True}
+    assert client.calls == [("set_contact_photos", True)]
+    try:
+        bridge.dispatch("set_contact_photos", {"enabled": "yes"})
+    except ValueError as error:
+        assert str(error) == "enabled must be a boolean"
+    else:
+        raise AssertionError("non-boolean preference was accepted")
+
+
+def test_bridge_saves_the_one_time_code_opt_in() -> None:
+    client = FakeClient()
+    client.set_otp_autocopy = lambda enabled: (  # type: ignore[attr-defined]
+        client.calls.append(("set_otp_autocopy", enabled)) or {"otp_autocopy": enabled}
+    )
+    bridge = QuickshellBridge(client)  # type: ignore[arg-type]
+
+    assert bridge.dispatch("set_otp_autocopy", {"enabled": True}) == {"otp_autocopy": True}
+    assert client.calls == [("set_otp_autocopy", True)]
+    try:
+        bridge.dispatch("set_otp_autocopy", {"enabled": "yes"})
+    except ValueError as error:
+        assert str(error) == "enabled must be a boolean"
+    else:
+        raise AssertionError("non-boolean preference was accepted")
