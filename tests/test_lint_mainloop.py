@@ -23,7 +23,9 @@ def test_source_tree_has_no_new_findings_or_stale_entries() -> None:
 
 
 def test_every_exemption_has_a_reason() -> None:
-    for table in (lint_mainloop.ALLOWLIST, lint_mainloop.KNOWN_DEBT):
+    for table in (
+        lint_mainloop.ALLOWLIST, lint_mainloop.KNOWN_DEBT, lint_mainloop.RUNTIME_KNOWN_DEBT,
+    ):
         assert all(reason.strip() for reason in table.values())
     assert not set(lint_mainloop.ALLOWLIST) & set(lint_mainloop.KNOWN_DEBT)
 

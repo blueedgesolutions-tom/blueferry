@@ -26,7 +26,8 @@ before a reviewer has to:
 (transitively from ``blueferry.daemon``); ``untyped-empty`` applies to every
 module, because the ValueError hits clients just as hard. Deliberate
 exceptions go in ``ALLOWLIST`` with a reason; findings that predate the check
-and still need fixing are listed in ``KNOWN_DEBT``. An entry is keyed by
+and still need fixing are listed in ``KNOWN_DEBT`` (``RUNTIME_KNOWN_DEBT`` for
+calls only the test-suite guard sees). An entry is keyed by
 module, function and rule, so it exempts every matching call in that whole
 function, not one line: keep exempted functions small, and re-check the
 reason when such a function grows. Exit status is 1 on new findings or
@@ -178,6 +179,15 @@ KNOWN_DEBT: dict[tuple[str, str, str], str] = {
         _LIBNOTIFY,
     ("blueferry.sinks.libnotify", "_notification_hints", "sync-dbus"):
         "list_names per popup to pick the desktop-entry hint; track client names by signal",
+}
+
+# Blocking calls the AST cannot see (a method fetched with getattr), found by
+# the sync_dbus_guard in tests/conftest.py at run time. Same rules as
+# KNOWN_DEBT: NOT safe, remove the entry with the fix, never add new ones.
+# Keyed by (module, enclosing function qualname).
+RUNTIME_KNOWN_DEBT: dict[tuple[str, str], str] = {
+    ("blueferry.ancs.client", "AncsClient._cached_notifying"):
+        "Properties.Get(Notifying) through getattr before each StartNotify decision",
 }
 
 _DBUS_METHOD = re.compile(r"^[A-Z][A-Za-z0-9]*$")
