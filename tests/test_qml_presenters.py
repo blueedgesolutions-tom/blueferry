@@ -799,6 +799,7 @@ def settings_window(qml_engine):
             function removeNotificationOpenTarget(bundle) { record("removeNotificationOpenTarget", [bundle]); }
             function setMediaControl(enabled) { record("setMediaControl", [enabled]); }
             function setAncsNotificationActions(enabled) { record("setAncsNotificationActions", [enabled]); }
+            function setMirrorNotificationRemovals(enabled) { record("setMirrorNotificationRemovals", [enabled]); }
             function setCallsEnabled(enabled) { record("setCallsEnabled", [enabled]); }
             function setPhoneBatteryWarning(enabled) { record("setPhoneBatteryWarning", [enabled]); }
             function setMprisPlayer(enabled) { record("setMprisPlayer", [enabled]); }
@@ -1285,6 +1286,47 @@ def test_ancs_actions_checkbox_is_opt_in_and_gated(qml_engine, settings_window):
     assert _evaluate(
         qml_engine, "testBridge.calls.filter(c => c.method === 'setAncsNotificationActions')"
     ) == [{"method": "setAncsNotificationActions", "args": [True]}]
+
+
+def test_mirror_removals_checkbox_is_opt_in_and_needs_a_supporting_daemon(
+    qml_engine, settings_window,
+):
+    window, bridge = settings_window
+    bridge.setProperty("setupLoaded", True)
+    bridge.setProperty("status", {"daemon": True, "notification_policy": "all"})
+    QGuiApplication.processEvents()
+    checkbox = _settings_object(window, "mirrorRemovalsCheckBox")
+    # Daemons that don't report the key do not support the setting.
+    assert checkbox.property("visible") is False
+
+    status = {
+        "daemon": True,
+        "notification_policy": "all",
+        "mirror_iphone_removals": False,
+    }
+    bridge.setProperty("status", status)
+    QGuiApplication.processEvents()
+    assert checkbox.property("visible") is True
+    assert checkbox.property("checked") is False
+    assert checkbox.property("enabled") is True
+
+    bridge.setProperty("busy", True)
+    QGuiApplication.processEvents()
+    assert checkbox.property("enabled") is False
+    bridge.setProperty("busy", False)
+    bridge.setProperty("status", {**status, "daemon": False})
+    QGuiApplication.processEvents()
+    assert checkbox.property("enabled") is False
+
+    bridge.setProperty("status", {**status, "mirror_iphone_removals": True})
+    QGuiApplication.processEvents()
+    assert checkbox.property("checked") is True
+    assert QMetaObject.invokeMethod(checkbox, "toggle")
+    assert QMetaObject.invokeMethod(checkbox, "clicked")
+    assert _evaluate(
+        qml_engine,
+        "testBridge.calls.filter(c => c.method === 'setMirrorNotificationRemovals')",
+    ) == [{"method": "setMirrorNotificationRemovals", "args": [False]}]
 
 
 def test_mpris_checkbox_needs_media_control_and_a_supporting_daemon(qml_engine, settings_window):

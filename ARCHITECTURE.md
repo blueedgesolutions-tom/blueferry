@@ -701,6 +701,14 @@ A change to these rules has to be made in both places.
   the serialized Control Point queue. Clients only toggle the preference
   (`SetAncsNotificationActions`); no D-Bus method performs an action, because
   clients never see ANCS notifications or UIDs.
+- **Following removals on the iPhone** (off by default; `mirror_iphone_removals`
+  in `settings.json`, `Messages1.SetMirrorNotificationRemovals`): when the
+  iPhone reports an ANCS NotificationRemoved, the libnotify sink closes every
+  popup it showed for that UID, with or without action buttons. The sink
+  keeps a bounded desktop-id to UID map that is dropped whenever the UID
+  session ends (subscription torn down or renewed, or a PreExisting replay
+  after live events), because iOS may reuse the UIDs; those popups then just
+  expire. Only UIDs and desktop ids are kept; nothing is broadcast.
 - **Configuration** files are owner-only, size-bounded, opened without
   following final symlinks, and restricted to named settings. systemd never
   sources them as a process environment.

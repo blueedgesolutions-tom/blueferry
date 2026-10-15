@@ -1069,6 +1069,24 @@ class BridgeController(QObject):
             failed,
         )
 
+    @Slot(bool)
+    def setMirrorNotificationRemovals(self, enabled: bool) -> None:
+        """Whether a removal on the iPhone also closes the desktop popup."""
+        def completed(value: object) -> None:
+            self._status["mirror_iphone_removals"] = bool(value)
+            self.statusChanged.emit()
+
+        def failed(message: str) -> None:
+            # Put the saved value back on screen after a failed save.
+            self._operation_failed(message)
+            self.statusChanged.emit()
+
+        self._run(
+            lambda: self._backend.set_mirror_notification_removals(bool(enabled)),
+            completed,
+            failed,
+        )
+
     @Slot(bool, int)
     def setProximityLock(self, enabled: bool, grace_seconds: int) -> None:
         def completed(value: object) -> None:
