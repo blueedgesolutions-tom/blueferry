@@ -142,6 +142,7 @@ class _PendingRequest:
     busy_retries: int = 0
     action_label_ids: tuple[int, ...] = ()
     action: _ActionRequest | None = None
+    discarded: bool = False
 
 
 _APP_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$")
@@ -1120,6 +1121,7 @@ class AncsClient:
         self._forget_actionable(n.id)
         if n.type == EventID.NotificationRemoved:
             log.debug("ANCS removed uid=%d", n.id)
+            self._discard_notification_requests(n.id)
             self._session_callback(self._on_removed, n.id)
             return
         # Skip pre-existing (notifications that already existed on the
@@ -1287,6 +1289,10 @@ class AncsClient:
                 return
             name = error.get_dbus_name() or type(error).__name__
             detail = error.get_dbus_message() or str(error)
+            if request.discarded:
+                self._finish_active_request()
+                self._pump_requests()
+                return
             if (
                 name.endswith(".InProgress")
                 and request.busy_retries < MAX_CONTROL_POINT_BUSY_RETRIES
@@ -1470,6 +1476,9 @@ class AncsClient:
         if complete is None:
             return
         self._finish_active_request()
+        if request.discarded:
+            self._pump_requests()
+            return
         try:
             ev = DataSourceEvent.parse(complete)
         except ValueError as error:
@@ -1682,7 +1691,32 @@ class AncsClient:
     def _end_session(self) -> None:
         """The UID session ended: its UIDs may name other notifications next."""
         self._live_events_seen = False
+        self._discard_notification_requests()
         self._session_callback(self._on_session_reset)
+
+    def _discard_notification_requests(self, uid: int | None = None) -> None:
+        """Retire pending content without interrupting a Control Point write.
+
+        Drain an active response before sending the next request, but never
+        turn its attributes into a popup after removal or a session replay.
+        """
+        def matches(request: _PendingRequest) -> bool:
+            return request.notification is not None and (
+                uid is None or request.notification.id == uid
+            )
+
+        self._request_queue.remove_if(matches)
+        request = self._active_request
+        if request is not None and matches(request) and not request.discarded:
+            request.discarded = True
+            # A reused UID may queue behind the draining response. Releasing
+            # this key must not let the old completion release the new one.
+            self._request_queue.finish(request.key)
+            request.key = f"retired:{request.key}"
+        for app_id, pending in list(self._pending_app_lookups.items()):
+            pending[:] = [attrs for attrs in pending if uid is not None and attrs.id != uid]
+            if not pending:
+                self._pending_app_lookups.pop(app_id, None)
 
     @staticmethod
     def _session_callback(callback: Callable[..., None] | None, *args: int) -> None:

@@ -2488,3 +2488,51 @@ def test_failing_session_callbacks_never_break_the_ancs_client(monkeypatch) -> N
     client._on_ns_changed("org.bluez.GattCharacteristic1", {"Value": _removal(3)}, [])
     client._clear_characteristic_subscription(stop_notify=False)
     assert not client._authorized
+
+
+@pytest.mark.parametrize("stage", ["queued", "probe", "content", "app_name"])
+@pytest.mark.parametrize("retire", ["removed", "replay"])
+def test_retired_notifications_cannot_be_emitted_by_late_replies(stage, retire):
+    emitted = []
+    client = AncsClient("/device", emitted.append, include_non_message_notifications=lambda: True)
+    iface = "org.bluez.GattCharacteristic1"
+    app_id = "com.example.Test"
+    client._on_ns_changed(iface, {"Value": _notification(42)}, [])
+    if stage in ("content", "app_name"):
+        _complete_app_probe(client, 42, app_id)
+    if stage == "app_name":
+        _complete_full_response(client, 42, app_id)
+    if stage != "queued":
+        client._active_request = client._request_queue.popleft()
+    packet = _removal(42) if retire == "removed" else _notification(99, flags=EventFlag.PreExisting)
+    client._on_ns_changed(iface, {"Value": packet}, [])
+
+    if stage == "queued":
+        assert not client._request_queue
+    elif stage == "app_name":
+        response = bytes([CommandID.GetAppAttributes]) + app_id.encode() + b"\0" + _attribute(0, "Test")
+        client._on_ds_changed(iface, {"Value": response}, [])
+    else:
+        response = bytes([CommandID.GetNotificationAttributes]) + struct.pack("<I", 42) + _attribute(0, app_id)
+        if stage == "content":
+            response += _attribute(1, "Alice") + _attribute(2, "") + _attribute(3, "old content")
+        client._on_ds_changed(iface, {"Value": response}, [])
+    assert not emitted
+    assert not client._pending_app_lookups
+    assert not client._request_queue
+
+
+def test_a_reused_uid_can_queue_while_its_retired_response_drains():
+    client = AncsClient("/device", lambda event: None)
+    iface = "org.bluez.GattCharacteristic1"
+    client._on_ns_changed(iface, {"Value": _notification(42)}, [])
+    old = client._active_request = client._request_queue.popleft()
+    client._on_ns_changed(iface, {"Value": _removal(42)}, [])
+    client._on_ns_changed(iface, {"Value": _notification(42)}, [])
+    assert client._active_request is old  # keep the wire serialized
+    assert len(client._request_queue) == 1
+    response = bytes([CommandID.GetNotificationAttributes]) + struct.pack("<I", 42) + _attribute(0, MESSAGES_APP_ID)
+    client._on_ds_changed(iface, {"Value": response}, [])
+    assert len(client._request_queue) == 1
+    _complete_app_probe(client, 42, MESSAGES_APP_ID)
+    assert len(client._request_queue) == 1
