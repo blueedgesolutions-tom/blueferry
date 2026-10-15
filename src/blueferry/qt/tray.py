@@ -133,6 +133,10 @@ class TrayController(QObject):
         self._launch = launch or launch_qt_client
         self._autostart_path = autostart_path or tray_autostart.entry_path()
         self._watchers: set[QDBusPendingCallWatcher] = set()
+        self._generation = 0
+        self._pending: dict[str, object] = {}
+        self._again: set[str] = set()
+        self._closed = False
         self._daemon_owned: bool | None = None
         # A new daemon owner has its own history: reload the unread count.
         self._threads_stale = False
@@ -199,6 +203,12 @@ class TrayController(QObject):
         self.refresh()
 
     def close(self) -> None:
+        self._closed = True
+        self._generation += 1
+        self._pending.clear()
+        self._again.clear()
+        for timer in (self._refresh_timer, self._threads_timer, self._fallback_timer):
+            timer.stop()
         self.tray.hide()
         self.menu.deleteLater()
 
@@ -240,16 +250,54 @@ class TrayController(QObject):
 
         watcher.finished.connect(finished)
 
+    def _load(
+        self, method: str, args: list, on_reply: Reply, on_error: Failure,
+        timer: QTimer, *, service: str = BUS_NAME, interface: str = MESSAGES_IFACE,
+        path: str = OBJECT_PATH,
+    ) -> None:
+        """One refresh per method; discard replies from an earlier daemon."""
+        if self._closed:
+            return
+        if method in self._pending:
+            self._again.add(method)
+            return
+        token = self._pending[method] = object()
+        generation = self._generation
+
+        def completed(callback, value) -> None:
+            if generation != self._generation or self._pending.get(method) is not token:
+                return
+            del self._pending[method]
+            again = method in self._again
+            self._again.discard(method)
+            callback(value)
+            if again and not self._closed:
+                timer.start()
+
+        self._call(
+            service, interface, method, args,
+            lambda reply: completed(on_reply, reply),
+            lambda error: completed(on_error, error), path=path,
+        )
+
     @Slot()
     def _status_invalidated(self) -> None:
-        self._refresh_timer.start()
+        if not self._closed and not self._refresh_timer.isActive():
+            self._refresh_timer.start()
 
     @Slot("QVariantMap")
     def _history_invalidated(self, _revision) -> None:
-        self._threads_timer.start()
+        if not self._closed and not self._threads_timer.isActive():
+            self._threads_timer.start()
 
     def _owner_changed(self, _name: str, _old: str, new: str) -> None:
+        if self._closed:
+            return
+        self._generation += 1
+        self._pending.clear()
+        self._again.clear()
         self._daemon_owned = bool(new)
+        self.apply_offline()
         # Both owner changes of a quick restart may fall into one coalesced
         # refresh, which then still sees the old status.
         self._threads_stale = True
@@ -262,15 +310,17 @@ class TrayController(QObject):
 
     @Slot()
     def refresh(self) -> None:
+        if self._closed:
+            return
         if not self._daemon_running():
             self.apply_offline()
             self._check_installed()
             return
         self.set_present(True)
-        self._call(
-            BUS_NAME, MESSAGES_IFACE, "GetStatus", [],
+        self._load(
+            "GetStatus", [],
             lambda args: self.apply_status(args[0] if args else ""),
-            lambda _name: self.apply_offline(),
+            lambda _name: self.apply_offline(), self._refresh_timer,
         )
 
     def _check_installed(self) -> None:
@@ -283,10 +333,11 @@ class TrayController(QObject):
             names = args[0] if args else []
             self.set_present(BUS_NAME in [str(name) for name in names or []])
 
-        self._call(
-            "org.freedesktop.DBus", "org.freedesktop.DBus", "ListActivatableNames", [],
+        self._load(
+            "ListActivatableNames", [],
             # Unknown: keep the icon rather than lose the only way back in.
-            listed, lambda _name: self.set_present(True),
+            listed, lambda _name: self.set_present(True), self._refresh_timer,
+            service="org.freedesktop.DBus", interface="org.freedesktop.DBus",
             path="/org/freedesktop/DBus",
         )
 
@@ -298,19 +349,21 @@ class TrayController(QObject):
     def refresh_threads(self) -> None:
         if self.status is None or not self._daemon_running():
             return
-        self._call(
+        self._load(
             # The signature says "u", but PySide6 can only marshal a Python
             # int as int32: QDBusArgument has no unsigned overload and
             # QVariant is not exposed. dbus-python does not enforce incoming
             # signatures, and the daemon bounds the limit anyway.
-            BUS_NAME, MESSAGES_IFACE, "ListThreads", [THREAD_LIMIT],
+            "ListThreads", [THREAD_LIMIT],
             lambda args: self.apply_threads(args[0] if args else "[]"),
-            lambda _name: None,
+            lambda _name: None, self._threads_timer,
         )
 
     # ---- state ----------------------------------------------------------
 
     def apply_offline(self) -> None:
+        self._pending.pop("ListThreads", None)
+        self._again.discard("ListThreads")
         self.status = None
         self.error = ""
         self.unread = 0

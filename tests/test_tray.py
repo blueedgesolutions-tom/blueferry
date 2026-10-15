@@ -216,3 +216,96 @@ def test_autostart_command_line(tmp_path: Path, choice: str, output: str, exists
     )
     assert (result.returncode, result.stdout.strip()) == (0, output), result.stderr
     assert (tmp_path / "autostart" / "io.weirdware.BlueFerry.Tray.desktop").exists() is exists
+
+
+_RACE_SETUP = textwrap.dedent("""
+    import json, sys
+    from pathlib import Path
+    from PySide6.QtDBus import QDBusConnection
+    from PySide6.QtWidgets import QApplication
+    from blueferry.protocol import BUS_NAME, MESSAGES_API_VERSION
+    from blueferry.qt.tray import TrayController
+
+    app = QApplication([])
+    calls = []
+    class DeferredTray(TrayController):
+        def _call(self, service, interface, method, args, reply, error, **kwargs):
+            calls.append((method, reply, error))
+    tray = DeferredTray(QDBusConnection("not-connected"), autostart_path=Path(sys.argv[1]) / "tray.desktop")
+    tray._daemon_owned = True
+    status = json.dumps({"api_version": MESSAGES_API_VERSION, "map": True})
+    threads = json.dumps([{"key": "a", "messages": [{"handle": "1", "read": False}]}])
+""")
+
+
+@needs_pyside6
+@pytest.mark.parametrize("scenario", [
+    "late_status", "late_threads", "status_burst", "threads_burst", "late_installed",
+    "closed",
+])
+def test_tray_delayed_replies(tmp_path, scenario):
+    cases = {
+        "late_status": """
+            tray.refresh()
+            reply = calls[-1][1]
+            tray._owner_changed(BUS_NAME, ":1.1", "")
+            reply([status])
+            assert tray.status is None
+            assert tray.unread == 0
+        """,
+        "late_threads": """
+            tray.apply_status(status)
+            reply = calls[-1][1]
+            tray._owner_changed(BUS_NAME, ":1.1", "")
+            tray.apply_offline()
+            reply([threads])
+            assert tray.unread == 0
+        """,
+        "status_burst": """
+            for _ in range(1000):
+                tray.refresh()
+            assert len(calls) == 1, len(calls)
+            calls[0][1]([status])
+            assert tray._refresh_timer.isActive()
+            tray.refresh()
+            assert len([c for c in calls if c[0] == "GetStatus"]) == 2
+        """,
+        "threads_burst": """
+            tray.apply_status(status)
+            for _ in range(1000):
+                tray.refresh_threads()
+            assert len(calls) == 1, len(calls)
+            calls[0][1]([threads])
+            assert tray._threads_timer.isActive()
+        """,
+        "late_installed": """
+            tray._daemon_owned = False
+            # Exercise the asynchronous installed check even on the inert bus.
+            tray._bus = type("Bus", (), {"isConnected": lambda self: True})()
+            tray.refresh()
+            reply = calls[-1][1]
+            tray._owner_changed(BUS_NAME, "", ":1.2")
+            tray.refresh()
+            assert tray.tray.isVisible()
+            reply([[]])
+            assert tray.tray.isVisible()
+        """,
+        "closed": """
+            tray.refresh()
+            reply = calls[-1][1]
+            tray.close()
+            reply([status])
+            assert tray.status is None
+            assert not tray._refresh_timer.isActive()
+            assert not tray._threads_timer.isActive()
+            assert not tray._fallback_timer.isActive()
+        """,
+    }
+    script = _RACE_SETUP + textwrap.dedent(cases[scenario]) + '\nprint("RACE-OK")\n'
+    result = subprocess.run(  # nosec B603 - fixed interpreter and regression script
+        [sys.executable, "-c", script, str(tmp_path)],
+        env={**os.environ, "QT_QPA_PLATFORM": "offscreen", "PYTHONPATH": str(ROOT / "src"),
+             "DBUS_SESSION_BUS_ADDRESS": "unix:path=/tmp/blueferry-tests-no-live-bus"},
+        capture_output=True, text=True, timeout=30, check=False,
+    )
+    assert result.returncode == 0 and "RACE-OK" in result.stdout, result.stdout + result.stderr
