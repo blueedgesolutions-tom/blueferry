@@ -664,15 +664,44 @@ specification-based expectation, not a captured result.
   the solicitation advertisement and never dials LE for it; it only uses the
   link the ANCS bearer supervision already maintains.
 - Remote Command (`9B3C81D8-…`) notifies the list of currently available
-  command IDs and accepts a one-byte command write. Commands outside that
-  list are not sent.
+  command IDs and accepts a one-byte command write; it is not readable.
+  Observed on hardware (iOS 27, Intel 8087:0033, BlueZ 5.87): iOS sends the
+  list only after a CCC write that enables notifications, so switching media
+  control off and on needs a `StopNotify` first. After an ordinary LE
+  reconnect, with BlueZ re-creating the GATT objects, Entity Updates flowed
+  but no list arrived. BlueFerry therefore treats the list as unknown (not
+  empty) until it arrives, and once per LE link, after an Entity Update with
+  no list within 3 seconds, toggles the Remote Command CCC (`StopNotify`,
+  then `StartNotify`) in the serialized GATT queue on the steady link. While
+  the list is unknown, commands are sent as asked; with a known list,
+  commands outside it are not sent. Whether the toggle brings the list back
+  after a reconnect still needs a hardware run.
 - Entity Update (`2F7CABCE-…`) is registered with one write per entity
   (Player, Queue, Track). Registrations are expected to be forgotten on
   disconnect, so they are rewritten after every LE reconnect. Notifications
   carry entity, attribute, a truncation flag, and a UTF-8 value. The
   specification states that the Media Source answers a registration with the
   current values; BlueFerry resubscribes (without resetting LE) if no update
-  arrives within 10 seconds of a registration.
+  arrives within 10 seconds of a registration. Observed on hardware
+  (2026-10-08, iOS 27, an audiobook playing, LE reconnecting every 1.5 to 2
+  minutes): after re-registration iOS sent a changed track title but neither
+  the player name nor PlaybackInfo, so the cleared state read "nothing
+  playing". Three seconds after each registration BlueFerry therefore reads
+  the Player and Track attributes that did not arrive through Entity
+  Update (read back via Entity Attribute); an absent one (AMS 0xA2) is just
+  logged.
+- Short LE drops can go unseen: the bearer state is polled every 5 seconds,
+  and a btmon capture (2026-10-08) showed a 0.5-second drop (Connection
+  Timeout) between two polls. BlueZ restored the CCCs of the bonded iPhone
+  itself (ANCS Data Source, AMS Remote Command and Entity Update; not the
+  ANCS Notification Source in that capture), iOS answered with its command
+  list, but the Entity Update registrations iOS had dropped with the link
+  were never rewritten, so AMS stayed silent through track changes.
+  BlueFerry therefore registers the entities again (without changing
+  availability) one second after any Remote Command notification on a
+  registered link, then reads the values that did not follow. iOS also
+  resends the list when the playing app changes; registering again then is
+  harmless.
 - A truncated value is completed by writing the entity/attribute selector to
   Entity Attribute (`C6B2F38C-…`) and reading it back; the two steps stay
   adjacent in the serialized GATT queue.
@@ -684,13 +713,25 @@ specification-based expectation, not a captured result.
   error 0xA0 (InvalidState), and every registration failed from then on.
 - The ANCS BlueZ 5.87 constraint applies here too: no `StopNotify` on a
   dropped or flapping link; surviving `Notifying=true` registrations are kept.
+  The deliberate `StopNotify` paths (runtime opt-out, command-list toggle,
+  InvalidState toggle) run only on a steady, subscribed link, and a toggle
+  whose link drops after the `StopNotify` never re-enables late.
+- After an LE drop, iOS can forget the Entity Update subscription while
+  BlueZ keeps its notify session and `Notifying=true` (hardware, 2026-10-15,
+  drop forced with `Bearer.LE1.Disconnect`): every registration is refused
+  with 0xA0 (InvalidState), and a repeated `StartNotify` writes no CCC. On
+  that answer BlueFerry toggles the Remote Command and Entity Update CCCs
+  (`StopNotify`, then `StartNotify`) before registering again, at most twice
+  per LE link; after that the ordinary subscription backoff applies.
 - AMS offers relative volume steps and fixed skips only, so an MPRIS volume
   write becomes one step, MPRIS `CanSeek` is false and `Seek`/`SetPosition`
   have no effect, and MPRIS `Stop` pauses. The skips remain available through
   `Media1`. MPRIS `Rate` follows the PlaybackInfo rate (the last positive one
-  while paused, since MPRIS forbids 0), `Volume` is omitted until the phone
-  reports it, and `mpris:trackid` stays the same when a truncated title is
-  completed.
+  while paused, since MPRIS forbids 0), `Volume` is omitted (from `Get`,
+  `GetAll` and introspection alike) until the phone reports it, the transport
+  `Can*` properties are true while the command list is unknown (a list the
+  phone did send is followed exactly, even when empty), and `mpris:trackid`
+  stays the same when a truncated title is completed.
 - AMS ATT application errors 0xA0 (InvalidState), 0xA1 (InvalidCommand) and
   0xA2 (AbsentAttribute) appear only in BlueZ's error message text; BlueFerry
   logs them by name.
