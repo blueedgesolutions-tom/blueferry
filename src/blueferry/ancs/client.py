@@ -1291,6 +1291,9 @@ class AncsClient:
             detail = error.get_dbus_message() or str(error)
             if request.discarded:
                 self._finish_active_request()
+                if _connection_was_lost(error):
+                    self._mark_transport_failed()
+                    return
                 self._pump_requests()
                 return
             if (

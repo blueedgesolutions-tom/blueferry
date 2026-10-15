@@ -2536,3 +2536,21 @@ def test_a_reused_uid_can_queue_while_its_retired_response_drains():
     assert len(client._request_queue) == 1
     _complete_app_probe(client, 42, MESSAGES_APP_ID)
     assert len(client._request_queue) == 1
+
+
+@pytest.mark.parametrize("error_name", ["org.bluez.Error.InProgress", "org.bluez.Error.NotConnected"])
+def test_retired_write_failure_does_not_retry_old_content(monkeypatch, error_name):
+    cp = _PendingControlPoint()
+    client, _timers = _async_write_client(monkeypatch, cp)
+    client._on_ns_changed("org.bluez.GattCharacteristic1", {"Value": _notification(42)}, [])
+    client._on_ns_changed("org.bluez.GattCharacteristic1", {"Value": _removal(42)}, [])
+    cp.writes[0]["error_handler"](client_module.dbus.exceptions.DBusException(
+        "retired write failed", name=error_name,
+    ))
+    assert len(cp.writes) == 1
+    assert client._active_request is None
+    assert client._cp_write_token is None
+    assert not client._request_queue
+    assert client._cp_busy_retry_id is None
+    if error_name.endswith("NotConnected"):
+        assert not client.connected
