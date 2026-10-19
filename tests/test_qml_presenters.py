@@ -2769,6 +2769,73 @@ Item {
     assert "ReferenceError" not in log and "TypeError" not in log, log
 
 
+def test_quickshell_composer_wraps_and_scrolls_when_resized(qml_engine):
+    warnings = []
+
+    def collect_warnings(errors):
+        warnings.extend(error.toString() for error in errors)
+
+    qml_engine.warnings.connect(collect_warnings)
+    component = QQmlComponent(qml_engine)
+    component.setData(b'''import QtQuick
+import QtQuick.Layouts
+import "."
+Window {
+  width: 320; height: 320; visible: true
+  ThemePalette { id: theme }
+  RowLayout {
+    anchors.left: parent.left
+    anchors.right: parent.right
+    anchors.top: parent.top
+    FerryMessageComposer {
+      id: composer
+      objectName: "composer"
+      ferryTheme: theme
+      Layout.fillWidth: true
+      placeholderText: "Write a message..."
+    }
+  }
+  readonly property real editorWidth: composer.contentChildren[0].width
+  readonly property int lineCount: composer.contentChildren[0].lineCount
+  readonly property real scrollHeight: composer.contentItem.contentHeight
+  readonly property real maxComposerHeight: theme.scaled(144)
+}''', QUrl.fromLocalFile(str(ROOT / "data/quickshell/composer-test.qml")))
+    window = component.create()
+    try:
+        assert window is not None, [error.toString() for error in component.errors()]
+        composer = window.findChild(QObject, "composer")
+        assert composer is not None
+        QTest.qWait(50)
+        empty_height = composer.property("height")
+        assert empty_height > 0
+        assert window.property("editorWidth") == pytest.approx(composer.property("availableWidth"))
+
+        composer.setProperty("text", "A long message that needs to wrap. " * 40)
+        QTest.qWait(50)
+        narrow_lines = window.property("lineCount")
+        assert narrow_lines > 1 and composer.property("multiline")
+        assert empty_height < composer.property("height") <= window.property("maxComposerHeight")
+        assert window.property("scrollHeight") > composer.property("availableHeight")
+        assert window.property("editorWidth") == pytest.approx(composer.property("availableWidth"))
+
+        window.setWidth(640)
+        QTest.qWait(50)
+        assert window.property("editorWidth") == pytest.approx(composer.property("availableWidth"))
+        assert composer.property("width") == pytest.approx(640)
+        assert 1 < window.property("lineCount") < narrow_lines
+
+        composer.setProperty("text", "")
+        QTest.qWait(50)
+        assert composer.property("height") == pytest.approx(empty_height)
+        assert not composer.property("multiline")
+    finally:
+        if window is not None:
+            window.deleteLater()
+            QGuiApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+        qml_engine.warnings.disconnect(collect_warnings)
+    assert not warnings, "\n".join(warnings)
+
+
 @pytest.mark.parametrize("late_after_refresh", [False, True])
 @pytest.mark.private_dbus
 @pytest.mark.parametrize("late_read", ["success", "failure"])
